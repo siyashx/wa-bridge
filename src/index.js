@@ -116,8 +116,8 @@ function findFirstSnetJidDeep(any) {
 
 function normalizeEnvelope(data) {
   const env = data?.messages || data?.message || data || {};
-  const key  = env.key || {};
-  const msg  = env.message || {};
+  const key = env.key || {};
+  const msg = env.message || {};
   const out = {
     key,
     msg,
@@ -231,17 +231,23 @@ app.post('/webhook', async (req, res) => {
     const username = phone || 'Unknown';
     const timestamp = formatBakuTimestamp();
 
+    const displayPhone = phone ? `+${phone}` : 'Naməlum';
+
+    // Mesajın sonuna yeni sətirdə nömrəni əlavə edirik
+    const messageWithPhone = `${textBody}\nƏlaqə nömrəsi - ${displayPhone}`;
+
+    // newChat obyektində message sahəsini buradakı kimi dəyiş:
     const newChat = {
-      id: Date.now(),          // Benzersiz ID
+      id: Date.now(),
       groupId: "0",
       userId: 2,
-      username,                // yalnız rəqəmlər (s.whatsapp.net-dən filtr)
+      username: phone || 'Unknown', // s.whatsapp.net-dən filtr olunmuş
       isSeenIds: [],
       messageType: "text",
       isReply: "false",
       userType: "customer",
-      message: textBody,       // yönləndirilən mətn
-      timestamp,               // "YYYY-MM-DD HH:mm:ss" (Asia/Baku)
+      message: messageWithPhone,     // <-- burada artıq nömrə əlavə olunub
+      timestamp: formatBakuTimestamp(),
       isCompleted: false,
     };
 
@@ -277,3 +283,4 @@ app.listen(PORT, () => {
     console.log('*** DRY_RUN is ON (no real messages will be sent) ***');
   }
 });
+
