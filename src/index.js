@@ -2,6 +2,8 @@
 import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
+import { Client } from '@stomp/stompjs';
+import WebSocket from 'ws';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -15,6 +17,10 @@ const {
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   // Bir neçə event-i parallel qəbul etmək istəyirsənsə:
   MULTI_EVENT = '0',
+  WS_URL = 'wss://mototaksi.az:9898/ws',
+  ONE_SIGNAL_APP_ID,
+  ONE_SIGNAL_REST_API_KEY,
+  ANDROID_CHANNEL_ID,
 } = process.env;
 
 /* ---------------- mini logger ---------------- */
@@ -217,6 +223,12 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // 🔒 Filtr: '+' və ya 'tapildi/tapıldı' varsa sifarişi göndərmə
+    if (shouldBlockMessage(textBody)) {
+      dlog('Skip: blocked by content filter (plus/tapildi)');
+      return;
+    }
+
     // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
     // sonra participant @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
@@ -228,26 +240,25 @@ app.post('/webhook', async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-    const username = phone || 'Unknown';
     const timestamp = formatBakuTimestamp();
 
-    const displayPhone = phone ? `+${phone}` : 'Naməlum';
-
-    // Mesajın sonuna yeni sətirdə nömrəni əlavə edirik
-    const messageWithPhone = `${textBody}\nƏlaqə nömrəsi - ${displayPhone}`;
+    // Mesaj olduğu kimi qalsın, nömrəni ayrıca field kimi verək
+    const normalizedPhone = phone ? `+${phone}` : '';
+    const cleanMessage = String(textBody);
 
     // newChat obyektində message sahəsini buradakı kimi dəyiş:
     const newChat = {
       id: Date.now(),
       groupId: "0",
       userId: 2,
-      username: phone || 'Unknown', // s.whatsapp.net-dən filtr olunmuş
+      username: 'Sifariş Qrupu İstifadəçisi',
+      phone: normalizedPhone,
       isSeenIds: [],
       messageType: "text",
       isReply: "false",
       userType: "customer",
-      message: messageWithPhone,     // <-- burada artıq nömrə əlavə olunub
-      timestamp: formatBakuTimestamp(),
+      message: cleanMessage,     // <-- burada artıq nömrə əlavə olunub
+      timestamp: timestamp,
       isCompleted: false,
     };
 
@@ -256,22 +267,200 @@ app.post('/webhook', async (req, res) => {
       newChat,
     });
 
+    // ✅ Mobil “sendMessageToSocket” ilə eyni hərəkət: WebSocket (STOMP) publish
+    // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
+    publishStomp('/app/sendChatMessage', newChat);
+
+    // 🔔 Publish-dən sonra push bildirişi (mobil loqika ilə eyni filtr)
     try {
-      const apiRes = await axios.post(`${TARGET_API_BASE}/api/chat`, newChat, {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 15000,
-      });
-      dlog('POST /api/chat result:', {
-        status: apiRes.status,
-        dataType: typeof apiRes.data,
-      });
-    } catch (e) {
-      console.error('POST /api/chat failed:', e?.response?.status, e?.response?.data || e.message);
+      const oneSignalIds = await fetchPushTargets(0); // sender DB user deyil, 0 veririk
+      if (oneSignalIds.length) {
+        const preview = (cleanMessage || '').slice(0, 140);
+        await sendPushNotification(
+          oneSignalIds,
+          '🪄🪄 Yeni Sifariş!!',
+          `📩 ${preview}`
+        );
+      } else {
+        dlog('No push targets found.');
+      }
+    } catch (pushErr) {
+      console.error('Post-publish push error:', pushErr?.message);
     }
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
 });
+
+function isValidUUID(s) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    .test(String(s || '').trim());
+}
+
+async function sendPushNotification(ids, title, body) {
+  // 1) daxil olan ID-ləri uniq & valid et
+  const subsRaw = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
+  const subsValid = subsRaw.filter(isValidUUID);
+  const unique = [...new Set(subsValid)];
+
+  if (!unique.length) {
+    dlog('Push skipped: no valid subscription ids (input)');
+    return;
+  }
+
+  // 2) Yalnız appVersion === 25 olan istifadəçilərin OneSignal ID-lərini saxla
+  let allowedSubs = [];
+  try {
+    const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
+    const users = Array.isArray(usersRes?.data) ? usersRes.data : [];
+
+    // appVersion 25 olanların OneSignal ID-lərini topla
+    const v25Set = new Set(
+      users
+        .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
+        .map(u => String(u.oneSignal).trim())
+    );
+
+    // daxil olan ID-lərlə kəsişmə
+    allowedSubs = unique.filter(id => v25Set.has(id));
+
+    if (!allowedSubs.length) {
+      dlog('Push skipped: no recipients with appVersion === 25');
+      return;
+    }
+  } catch (err) {
+    console.error('sendPushNotification: getUsers/appVersion filter error:', err?.response?.data || err?.message);
+    return; // təhlükəsiz tərəf: filter uğursuzdursa göndərmə
+  }
+
+  // 3) göndər
+  try {
+    const res = await axios.post(
+      'https://onesignal.com/api/v1/notifications',
+      {
+        app_id: ONE_SIGNAL_APP_ID,
+        include_subscription_ids: allowedSubs,
+        headings: { en: title },
+        contents: { en: body },
+        android_channel_id: ANDROID_CHANNEL_ID,
+        data: { screen: 'OrderGroup', groupId: 1 },
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
+        },
+        timeout: 15000,
+      }
+    );
+    dlog('OneSignal push sent:', { id: res.data?.id, recipients: res.data?.recipients, count: allowedSubs.length });
+  } catch (e) {
+    console.error('OneSignal push error:', e?.response?.data || e.message);
+  }
+}
+
+async function fetchPushTargets(senderUserId = 0) {
+  try {
+    const [usersRes, groupRes] = await Promise.all([
+      axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 }),
+      axios.get(`${TARGET_API_BASE}/api/v5/chat_group/1`, { timeout: 15000 }),
+    ]);
+
+    const mutedList = Array.isArray(groupRes?.data?.mutedUserIds)
+      ? groupRes.data.mutedUserIds.map(Number)
+      : [];
+
+    const all = usersRes?.data || [];
+    return all
+      .filter(u =>
+        Number(u.id) !== Number(senderUserId) &&
+        !(u.userType || '').includes('customer') &&
+        !mutedList.includes(Number(u.id)) &&
+        !!u.oneSignal
+      )
+      .map(u => u.oneSignal)
+      .filter(Boolean);
+  } catch (e) {
+    console.error('fetchPushTargets error:', e?.response?.data || e.message);
+    return [];
+  }
+}
+
+function shouldBlockMessage(raw) {
+  if (!raw) return false;
+  // unicode-normalize + lower — az dilində “ı/İ” variasiyaları da tutulsun
+  const text = String(raw).normalize('NFKC').toLowerCase();
+  // + işarəsi varsa dərhal blokla
+  if (text.includes('+')) return true;
+  // “tapildi / tapıldı” variasiyaları (diakritik fərqləri də tutur)
+  // həm “tapildi”, həm də “tapıldı” sözünü axtarırıq (hər yerdə çıxsa belə)
+  if (/(^|\s)(tapildi|tapıldı)(?=$|\s|[.,!?;:])/i.test(raw)) return true;
+  return false;
+}
+
+/* ---------------- STOMP (WebSocket) client ---------------- */
+let stompClient = null;
+let stompReady = false;
+const publishQueue = []; // bağlanana qədər yığılsın
+
+function initStomp() {
+  if (stompClient) return;
+
+  stompClient = new Client({
+    brokerURL: WS_URL,
+    // Node mühitində WebSocket factory gərəkdir:
+    webSocketFactory: () => new WebSocket(WS_URL),
+    reconnectDelay: 5000,
+    heartbeatIncoming: 20000,
+    heartbeatOutgoing: 20000,
+    onConnect: () => {
+      stompReady = true;
+      dlog('STOMP connected');
+      // queue boşalt
+      while (publishQueue.length) {
+        const { destination, body } = publishQueue.shift();
+        try {
+          stompClient.publish({ destination, body });
+        } catch (e) {
+          console.error('STOMP publish (flush) error:', e?.message);
+        }
+      }
+    },
+    onStompError: (frame) => {
+      stompReady = false;
+      console.error('STOMP error:', frame.headers?.message, frame.body);
+    },
+    onWebSocketClose: () => {
+      stompReady = false;
+      dlog('STOMP socket closed, will auto-reconnect…');
+    },
+    debug: (str) => {
+      if (String(DEBUG) === '1') console.log('[STOMP]', str);
+    },
+  });
+
+  stompClient.activate();
+}
+
+function publishStomp(destination, payloadObj) {
+  const body = JSON.stringify(payloadObj);
+  if (stompClient && stompReady) {
+    try {
+      stompClient.publish({ destination, body });
+      dlog('STOMP publish ok:', { destination });
+    } catch (e) {
+      console.error('STOMP publish error, queueing:', e?.message);
+      publishQueue.push({ destination, body });
+    }
+  } else {
+    dlog('STOMP not ready, queueing publish');
+    publishQueue.push({ destination, body });
+    initStomp();
+  }
+}
+
+// server startında init
+initStomp();
 
 /* ---------------- start ---------------- */
 
