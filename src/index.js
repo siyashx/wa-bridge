@@ -317,39 +317,41 @@ function isValidUUID(s) {
 }
 
 async function sendPushNotification(ids, title, body) {
-  const subsRaw = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
-  const subsValid = subsRaw.filter(isValidUUID);
-  const baseUnique = [...new Set(subsValid)];
-
-  if (!baseUnique.length) {
+  // normalize incoming ids and keep only valid OneSignal UUIDs
+  const input = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
+  const validInput = [...new Set(input.filter(isValidUUID))];
+  if (!validInput.length) {
     dlog('Push skipped: no valid subscription ids (input)');
     return;
   }
 
-  let targetIds = [];
+  // fetch users and keep ONLY those with appVersion === 25
+  let v25Ids = [];
   try {
     const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
     const users = Array.isArray(usersRes?.data) ? usersRes.data : [];
+
     const v25Set = new Set(
       users
         .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
         .map(u => String(u.oneSignal).trim())
     );
-    targetIds = baseUnique.filter(id => v25Set.has(id));
+
+    // intersect provided ids with v25 set
+    v25Ids = validInput.filter(id => v25Set.has(id));
   } catch (err) {
-    console.error('sendPushNotification: users fetch failed, using base list. Err=', err?.message);
-    targetIds = baseUnique;
+    console.error('sendPushNotification: failed to load users; aborting send. Err =', err?.message);
+    return; // hard stop: do NOT send if we can’t verify v25 users
   }
 
-  // fallback: appVersion=25-lə kəsişmə boşdursa, bazadakıları istifadə et
-  if (!targetIds.length) {
-    dlog('Push recipients after v25 filter is empty — falling back to base list');
-    targetIds = baseUnique;
+  if (!v25Ids.length) {
+    dlog('Push skipped: no recipients with appVersion === 25 (intersection empty)');
+    return;
   }
 
   const payload = {
     app_id: ONE_SIGNAL_APP_ID,
-    include_subscription_ids: targetIds,
+    include_subscription_ids: v25Ids,
     headings: { en: title },
     contents: { en: body },
     android_channel_id: ANDROID_CHANNEL_ID,
@@ -365,7 +367,11 @@ async function sendPushNotification(ids, title, body) {
         },
         timeout: 15000,
       });
-      dlog(`OneSignal push sent (${tag})`, { id: res.data?.id, recipients: res.data?.recipients, count: targetIds.length });
+      dlog(`OneSignal push sent (${tag})`, {
+        id: res.data?.id,
+        recipients: res.data?.recipients,
+        count: v25Ids.length,
+      });
       return true;
     } catch (e) {
       console.error(`OneSignal push error (${tag}):`, e?.response?.data || e.message);
@@ -373,14 +379,14 @@ async function sendPushNotification(ids, title, body) {
     }
   };
 
-  // ilk cəhd
+  // one attempt + single retry
   const ok = await fire('try1');
-  if (ok) return;
-
-  // 2 s sonra təkrar cəhd
-  await new Promise(r => setTimeout(r, 2000));
-  await fire('retry');
+  if (!ok) {
+    await new Promise(r => setTimeout(r, 2000));
+    await fire('retry');
+  }
 }
+
 
 async function fetchPushTargets(senderUserId = 0) {
   try {
