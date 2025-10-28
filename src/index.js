@@ -12,16 +12,19 @@ const {
   PORT = 4242,
   WEBHOOK_SECRET,
   GROUP_A_JID,
+  GROUP_A_JID2,                       // ⬅️ yeni
   DEBUG = '1',
-  // Hədəf backend (məs: https://mototaksi.az:9898)
   TARGET_API_BASE = 'https://mototaksi.az:9898',
-  // Bir neçə event-i parallel qəbul etmək istəyirsənsə:
   MULTI_EVENT = '0',
   WS_URL = 'wss://mototaksi.az:9898/ws',
   ONE_SIGNAL_APP_ID,
   ONE_SIGNAL_REST_API_KEY,
   ANDROID_CHANNEL_ID,
 } = process.env;
+
+const ALLOWED_GROUPS = new Set(
+  [GROUP_A_JID, GROUP_A_JID2].filter(Boolean)
+);
 
 /* ---------------- mini logger ---------------- */
 const dlog = (...args) => {
@@ -205,9 +208,8 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    // yalnız A qrupu
-    if (!env.remoteJid || env.remoteJid !== GROUP_A_JID) {
-      dlog('Skip: remoteJid mismatch', { got: env.remoteJid, want: GROUP_A_JID });
+    if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) {
+      dlog('Skip: remoteJid not in allowed set', { got: env.remoteJid, allowed: [...ALLOWED_GROUPS] });
       return;
     }
 
@@ -246,19 +248,25 @@ app.post('/webhook', async (req, res) => {
     const normalizedPhone = phone ? `+${phone}` : '';
     const cleanMessage = String(textBody);
 
+    // 🔁 dublikat varsa dayandır
+    if (await isDuplicateChatMessage(cleanMessage)) {
+      dlog('Skip: duplicate message text exists in /api/chats');
+      return;
+    }
+
     // newChat obyektində message sahəsini buradakı kimi dəyiş:
     const newChat = {
       id: Date.now(),
       groupId: "0",
       userId: 2,
       username: 'Sifariş Qrupu İstifadəçisi',
-      phone: normalizedPhone,
+      phone: normalizedPhone,           // +994… varsa burada
       isSeenIds: [],
       messageType: "text",
       isReply: "false",
       userType: "customer",
-      message: cleanMessage,     // <-- burada artıq nömrə əlavə olunub
-      timestamp: timestamp,
+      message: cleanMessage,            // yalnız sifariş mətni
+      timestamp,
       isCompleted: false,
     };
 
@@ -270,6 +278,17 @@ app.post('/webhook', async (req, res) => {
     // ✅ Mobil “sendMessageToSocket” ilə eyni hərəkət: WebSocket (STOMP) publish
     // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
     publishStomp('/app/sendChatMessage', newChat);
+
+    // HTTP POST – arxa plana yaz (ehtiyat kanalı)
+    try {
+      await axios.post(`${TARGET_API_BASE}/api/chats`, newChat, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 15000,
+      });
+      dlog('HTTP POST /api/chats ok');
+    } catch (e) {
+      console.error('HTTP POST /api/chats failed:', e?.response?.status, e?.response?.data || e.message);
+    }
 
     // 🔔 Publish-dən sonra push bildirişi (mobil loqika ilə eyni filtr)
     try {
@@ -298,65 +317,69 @@ function isValidUUID(s) {
 }
 
 async function sendPushNotification(ids, title, body) {
-  // 1) daxil olan ID-ləri uniq & valid et
   const subsRaw = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
   const subsValid = subsRaw.filter(isValidUUID);
-  const unique = [...new Set(subsValid)];
+  const baseUnique = [...new Set(subsValid)];
 
-  if (!unique.length) {
+  if (!baseUnique.length) {
     dlog('Push skipped: no valid subscription ids (input)');
     return;
   }
 
-  // 2) Yalnız appVersion === 25 olan istifadəçilərin OneSignal ID-lərini saxla
-  let allowedSubs = [];
+  let targetIds = [];
   try {
     const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
     const users = Array.isArray(usersRes?.data) ? usersRes.data : [];
-
-    // appVersion 25 olanların OneSignal ID-lərini topla
     const v25Set = new Set(
       users
         .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
         .map(u => String(u.oneSignal).trim())
     );
-
-    // daxil olan ID-lərlə kəsişmə
-    allowedSubs = unique.filter(id => v25Set.has(id));
-
-    if (!allowedSubs.length) {
-      dlog('Push skipped: no recipients with appVersion === 25');
-      return;
-    }
+    targetIds = baseUnique.filter(id => v25Set.has(id));
   } catch (err) {
-    console.error('sendPushNotification: getUsers/appVersion filter error:', err?.response?.data || err?.message);
-    return; // təhlükəsiz tərəf: filter uğursuzdursa göndərmə
+    console.error('sendPushNotification: users fetch failed, using base list. Err=', err?.message);
+    targetIds = baseUnique;
   }
 
-  // 3) göndər
-  try {
-    const res = await axios.post(
-      'https://onesignal.com/api/v1/notifications',
-      {
-        app_id: ONE_SIGNAL_APP_ID,
-        include_subscription_ids: allowedSubs,
-        headings: { en: title },
-        contents: { en: body },
-        android_channel_id: ANDROID_CHANNEL_ID,
-        data: { screen: 'OrderGroup', groupId: 1 },
-      },
-      {
+  // fallback: appVersion=25-lə kəsişmə boşdursa, bazadakıları istifadə et
+  if (!targetIds.length) {
+    dlog('Push recipients after v25 filter is empty — falling back to base list');
+    targetIds = baseUnique;
+  }
+
+  const payload = {
+    app_id: ONE_SIGNAL_APP_ID,
+    include_subscription_ids: targetIds,
+    headings: { en: title },
+    contents: { en: body },
+    android_channel_id: ANDROID_CHANNEL_ID,
+    data: { screen: 'OrderGroup', groupId: 1 },
+  };
+
+  const fire = async (tag) => {
+    try {
+      const res = await axios.post('https://onesignal.com/api/v1/notifications', payload, {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
         },
         timeout: 15000,
-      }
-    );
-    dlog('OneSignal push sent:', { id: res.data?.id, recipients: res.data?.recipients, count: allowedSubs.length });
-  } catch (e) {
-    console.error('OneSignal push error:', e?.response?.data || e.message);
-  }
+      });
+      dlog(`OneSignal push sent (${tag})`, { id: res.data?.id, recipients: res.data?.recipients, count: targetIds.length });
+      return true;
+    } catch (e) {
+      console.error(`OneSignal push error (${tag}):`, e?.response?.data || e.message);
+      return false;
+    }
+  };
+
+  // ilk cəhd
+  const ok = await fire('try1');
+  if (ok) return;
+
+  // 2 s sonra təkrar cəhd
+  await new Promise(r => setTimeout(r, 2000));
+  await fire('retry');
 }
 
 async function fetchPushTargets(senderUserId = 0) {
@@ -388,14 +411,46 @@ async function fetchPushTargets(senderUserId = 0) {
 
 function shouldBlockMessage(raw) {
   if (!raw) return false;
-  // unicode-normalize + lower — az dilində “ı/İ” variasiyaları da tutulsun
-  const text = String(raw).normalize('NFKC').toLowerCase();
-  // + işarəsi varsa dərhal blokla
-  if (text.includes('+')) return true;
-  // “tapildi / tapıldı” variasiyaları (diakritik fərqləri də tutur)
-  // həm “tapildi”, həm də “tapıldı” sözünü axtarırıq (hər yerdə çıxsa belə)
-  if (/(^|\s)(tapildi|tapıldı)(?=$|\s|[.,!?;:])/i.test(raw)) return true;
+
+  // — normalize (diakritik və böyük/kiçik hərflər)
+  const text = String(raw).normalize('NFKC');
+  const lower = text.toLowerCase();
+
+  // 2.1) LƏĞV / STOP sinonimləri → blokla
+  // (ləğv, ləgv, legv, stop – böyük/kiçik fərq etmir)
+  const cancelRe = /\b(l[əe]ğ?v|stop)\b/i;
+  if (cancelRe.test(text)) return true;
+
+  // 2.2) "tapildi/tapıldı" → blokla
+  if (/\btap(i|ı)ld(i|ı)\b/i.test(text)) return true;
+
+  // 2.3) Yalnız "+" (və ya yalnız + işarələrindən ibarət) → blokla
+  if (/^\s*\++\s*$/.test(text)) return true;
+
+  // 2.4) "+994..." kimi telefon nömrəsi daşıyırsa → blokla
+  if (/\+994[\d\s-]{7,}/.test(lower)) return true;
+
+  // 2.5) Əks halda (məs: "… + wolt …") → İCAZƏ VER
+  // yəni mesajın içində + işarəsi olsa da, əgər yanında rəqəm başlamırsa bloklamırıq
   return false;
+}
+
+async function isDuplicateChatMessage(messageText) {
+  try {
+    // son mesajları götür (sürətli olsun deyə limit kiçik saxlayırıq)
+    const res = await axios.get(`${TARGET_API_BASE}/api/chats`, { timeout: 15000 });
+    const list = Array.isArray(res?.data) ? res.data : [];
+
+    const needle = String(messageText || '').trim();
+    if (!needle) return false;
+
+    // eyni “message” olan varsa dublikat say
+    return list.some(c => String(c?.message || '').trim() === needle);
+  } catch (e) {
+    console.error('isDuplicateChatMessage error:', e?.response?.status, e?.response?.data || e.message);
+    // təhlükəsizlik üçün (servis çatmasa) dublikat saymayaq
+    return false;
+  }
 }
 
 /* ---------------- STOMP (WebSocket) client ---------------- */
