@@ -279,16 +279,6 @@ app.post('/webhook', async (req, res) => {
     // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
     publishStomp('/app/sendChatMessage', newChat);
 
-    // HTTP POST – arxa plana yaz (ehtiyat kanalı)
-    try {
-      await axios.post(`${TARGET_API_BASE}/api/chats`, newChat, {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 15000,
-      });
-      dlog('HTTP POST /api/chats ok');
-    } catch (e) {
-      console.error('HTTP POST /api/chats failed:', e?.response?.status, e?.response?.data || e.message);
-    }
 
     // 🔔 Publish-dən sonra push bildirişi (mobil loqika ilə eyni filtr)
     try {
@@ -386,7 +376,6 @@ async function sendPushNotification(ids, title, body) {
     await fire('retry');
   }
 }
-
 
 async function fetchPushTargets(senderUserId = 0) {
   try {
