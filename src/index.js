@@ -302,7 +302,7 @@ app.post('/webhook', async (req, res) => {
         messageType: "location",
         isReply: "false",
         userType: "customer",
-        message: loc.caption || loc.name || "",   // opsional başlıq
+        message: "",   // opsional başlıq
         timestamp,
         isCompleted: false,
         // yalnız backend üçün:
@@ -310,13 +310,7 @@ app.post('/webhook', async (req, res) => {
         locationLng: loc.lng,
         thumbnail: loc._raw?.jpegThumbnail || null
       };
-
-      dlog('About to STOMP publish location:', {
-        destination: '/app/sendChatMessage',
-        lat: newChat.locationLat, lng: newChat.locationLng,
-        hasThumb: !!newChat.thumbnail
-      });
-
+      
       publishStomp('/app/sendChatMessage', newChat);
 
       // push preview: caption/name varsa onu, yoxdursa koordinatı göstər
