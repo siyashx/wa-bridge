@@ -279,20 +279,9 @@ app.post('/webhook', async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-    const timestamp = formatBakuTimestamp();
-
-    // Mesaj olduğu kimi qalsın, nömrəni ayrıca field kimi verək
-    const normalizedPhone = phone ? `+${phone}` : '';
-    const cleanMessage = String(textBody);
-
-    // 🔁 dublikat varsa dayandır
-    if (await isDuplicateChatMessage(cleanMessage)) {
-      dlog('Skip: duplicate message text exists in /api/chats');
-      return;
-    }
-
     // 1) ƏVVƏL statik location olub-olmadığını yoxla
     const loc = getStaticLocation(env.msg);
+
     if (loc) {
       logStaticLocation(env, loc); // (istəsən saxla)
 
@@ -321,6 +310,12 @@ app.post('/webhook', async (req, res) => {
         locationLng: loc.lng,
         thumbnail: loc._raw?.jpegThumbnail || null
       };
+
+      dlog('About to STOMP publish location:', {
+        destination: '/app/sendChatMessage',
+        lat: newChat.locationLat, lng: newChat.locationLng,
+        hasThumb: !!newChat.thumbnail
+      });
 
       publishStomp('/app/sendChatMessage', newChat);
 
@@ -356,6 +351,18 @@ app.post('/webhook', async (req, res) => {
     // 🔒 Filtr: '+' və ya 'tapildi/tapıldı' varsa sifarişi göndərmə
     if (shouldBlockMessage(textBody)) {
       dlog('Skip: blocked by content filter (plus/tapildi)');
+      return;
+    }
+
+    const timestamp = formatBakuTimestamp();
+
+    // Mesaj olduğu kimi qalsın, nömrəni ayrıca field kimi verək
+    const normalizedPhone = phone ? `+${phone}` : '';
+    const cleanMessage = String(textBody);
+
+    // 🔁 dublikat varsa dayandır
+    if (await isDuplicateChatMessage(cleanMessage)) {
+      dlog('Skip: duplicate message text exists in /api/chats');
       return;
     }
 
