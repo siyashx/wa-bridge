@@ -304,7 +304,7 @@ app.post('/webhook', async (req, res) => {
         messageType: "location",
         isReply: "false",
         userType: "customer",
-        message: "",   // opsional başlıq
+        message: loc.caption || loc.name || "",
         timestamp,
         isCompleted: false,
         // yalnız backend üçün:
