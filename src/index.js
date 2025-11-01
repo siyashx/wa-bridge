@@ -165,6 +165,55 @@ function formatBakuTimestamp(date = new Date()) {
   return parts.replaceAll('.', ':');
 }
 
+// ---- helpers (digərlərinin yanına əlavə et) ----
+
+// Yalnız STATIK lokasiya (locationMessage). liveLocationMessage nəzərə alınmır.
+function getStaticLocation(msg) {
+  if (!msg) return null;
+
+  // Bəzən location "view once" içində gəlir
+  const core = msg.viewOnceMessageV2?.message || msg;
+
+  const lm = core?.locationMessage;
+  if (!lm) return null;
+
+  const lat = Number(lm.degreesLatitude);
+  const lng = Number(lm.degreesLongitude);
+
+  return {
+    kind: 'location',
+    lat, lng,
+    name: lm.name || null,
+    address: lm.address || null,
+    caption: lm.caption || null,
+    url: lm.url || `https://maps.google.com/?q=${lat},${lng}`,
+    // xam obyekti də qaytaraq ki, tam JSON-u log edək
+    _raw: lm,
+  };
+}
+
+function logStaticLocation(env, loc) {
+  dlog('--- STATIC LOCATION DETECTED ---');
+  dlog('from:', {
+    remoteJid: env.remoteJid,
+    participant: env.participant,
+    id: env.id,
+  });
+
+  // Konsola “oxunaqlı” JSON veririk
+  try {
+    console.log('locationMessage RAW =', JSON.stringify(loc._raw, null, 2));
+  } catch { /* no-op */ }
+
+  // TL;DR görünüş
+  dlog('loc.short:', {
+    lat: loc.lat, lng: loc.lng,
+    name: loc.name, address: loc.address,
+    caption: loc.caption, url: loc.url,
+  });
+  dlog('--------------------------------');
+}
+
 /* ---------------- routes ---------------- */
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -216,6 +265,18 @@ app.post('/webhook', async (req, res) => {
     // Dedup
     if (seenRecently(env.id)) {
       dlog('Skip: duplicate message id within window', { id: env.id });
+      return;
+    }
+
+    const loc = getStaticLocation(env.msg);
+    if (loc) {
+      // Sadəcə test üçün konsola detallı JSON yazdırırıq
+      logStaticLocation(env, loc);
+
+      // İSTƏRSƏN: burada return edərək mətn emalını atlamaq olar,
+      // çünki bu mərhələdə yalnız test/log istəyirsən.
+      // Əgər location-u ayrıca yönləndirmək istəyəcəksənsə,
+      // buradakı return-i silib istədiyin məntiqi əlavə edərsən.
       return;
     }
 
@@ -278,7 +339,6 @@ app.post('/webhook', async (req, res) => {
     // ✅ Mobil “sendMessageToSocket” ilə eyni hərəkət: WebSocket (STOMP) publish
     // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
     publishStomp('/app/sendChatMessage', newChat);
-
 
     // 🔔 Publish-dən sonra push bildirişi (mobil loqika ilə eyni filtr)
     try {
