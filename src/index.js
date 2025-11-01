@@ -268,18 +268,6 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    const textBody = extractText(env.msg);
-    if (!textBody) {
-      dlog('Skip: no text in message');
-      return;
-    }
-
-    // 🔒 Filtr: '+' və ya 'tapildi/tapıldı' varsa sifarişi göndərmə
-    if (shouldBlockMessage(textBody)) {
-      dlog('Skip: blocked by content filter (plus/tapildi)');
-      return;
-    }
-
     // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
     // sonra participant @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
@@ -303,37 +291,51 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // 1) ƏVVƏL statik location olub-olmadığını yoxla
     const loc = getStaticLocation(env.msg);
     if (loc) {
+      logStaticLocation(env, loc); // (istəsən saxla)
+
+      const timestamp = formatBakuTimestamp();
+      const normalizedPhone = (parsePhoneFromSNetJid(findFirstSnetJidDeep(req.body)) ||
+        parsePhoneFromSNetJid(env.participant) ||
+        parseDigitsFromLid(env.participant) ||
+        '');
+      const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
+
       const newChat = {
         id: Date.now(),
         groupId: "0",
         userId: 2,
         username: "Sifariş Qrupu İstifadəçisi",
-        phone: normalizedPhone,
+        phone: phonePrefixed,
         isSeenIds: [],
         messageType: "location",
         isReply: "false",
         userType: "customer",
-        message: loc.caption || loc.name || "",   // opsional
-        timestamp: formatBakuTimestamp(),
+        message: loc.caption || loc.name || "",   // opsional başlıq
+        timestamp,
         isCompleted: false,
-
-        // ✅ yalnız bunlar backend üçündür:
+        // yalnız backend üçün:
         locationLat: loc.lat,
         locationLng: loc.lng,
         thumbnail: loc._raw?.jpegThumbnail || null
       };
+
       publishStomp('/app/sendChatMessage', newChat);
 
+      // push preview: caption/name varsa onu, yoxdursa koordinatı göstər
+      const preview = (newChat.message && newChat.message.trim())
+        ? newChat.message.slice(0, 140)
+        : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
+
       try {
-        const oneSignalIds = await fetchPushTargets(0); // sender DB user deyil, 0 veririk
+        const oneSignalIds = await fetchPushTargets(0);
         if (oneSignalIds.length) {
-          const preview = (cleanMessage || '').slice(0, 140);
           await sendPushNotification(
             oneSignalIds,
             '🪄🪄 Yeni Sifariş!!',
-            `📩 ${preview}`
+            `📍 ${preview}`
           );
         } else {
           dlog('No push targets found.');
@@ -341,7 +343,20 @@ app.post('/webhook', async (req, res) => {
       } catch (pushErr) {
         console.error('Post-publish push error:', pushErr?.message);
       }
-      return; // ✔️ mətn emalına düşməsin
+      return; // Location emal olundu, dayandır
+    }
+
+    // 2) Sonra mətn mesajlarını emal et
+    const textBody = extractText(env.msg);
+    if (!textBody) {
+      dlog('Skip: no text in message');
+      return;
+    }
+
+    // 🔒 Filtr: '+' və ya 'tapildi/tapıldı' varsa sifarişi göndərmə
+    if (shouldBlockMessage(textBody)) {
+      dlog('Skip: blocked by content filter (plus/tapildi)');
+      return;
     }
 
     // newChat obyektində message sahəsini buradakı kimi dəyiş:
