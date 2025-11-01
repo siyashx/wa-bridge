@@ -12,7 +12,8 @@ const {
   PORT = 4242,
   WEBHOOK_SECRET,
   GROUP_A_JID,
-  GROUP_A_JID2,                       // ⬅️ yeni
+  GROUP_A_JID2,
+  GROUP_A_JID3,                       // ⬅️ yeni
   DEBUG = '1',
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   MULTI_EVENT = '0',
@@ -23,7 +24,8 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_A_JID2].filter(Boolean)
+  [GROUP_A_JID, GROUP_A_JID2,
+    GROUP_A_JID3].filter(Boolean)
 );
 
 /* ---------------- mini logger ---------------- */
@@ -310,7 +312,7 @@ app.post('/webhook', async (req, res) => {
         locationLng: loc.lng,
         thumbnail: loc._raw?.jpegThumbnail || null
       };
-      
+
       publishStomp('/app/sendChatMessage', newChat);
 
       // push preview: caption/name varsa onu, yoxdursa koordinatı göstər
