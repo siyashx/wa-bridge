@@ -268,18 +268,6 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    const loc = getStaticLocation(env.msg);
-    if (loc) {
-      // Sadəcə test üçün konsola detallı JSON yazdırırıq
-      logStaticLocation(env, loc);
-
-      // İSTƏRSƏN: burada return edərək mətn emalını atlamaq olar,
-      // çünki bu mərhələdə yalnız test/log istəyirsən.
-      // Əgər location-u ayrıca yönləndirmək istəyəcəksənsə,
-      // buradakı return-i silib istədiyin məntiqi əlavə edərsən.
-      return;
-    }
-
     const textBody = extractText(env.msg);
     if (!textBody) {
       dlog('Skip: no text in message');
@@ -313,6 +301,47 @@ app.post('/webhook', async (req, res) => {
     if (await isDuplicateChatMessage(cleanMessage)) {
       dlog('Skip: duplicate message text exists in /api/chats');
       return;
+    }
+
+    const loc = getStaticLocation(env.msg);
+    if (loc) {
+      const newChat = {
+        id: Date.now(),
+        groupId: "0",
+        userId: 2,
+        username: "Sifariş Qrupu İstifadəçisi",
+        phone: normalizedPhone,
+        isSeenIds: [],
+        messageType: "location",
+        isReply: "false",
+        userType: "customer",
+        message: loc.caption || loc.name || "",   // opsional
+        timestamp: formatBakuTimestamp(),
+        isCompleted: false,
+
+        // ✅ yalnız bunlar backend üçündür:
+        locationLat: loc.lat,
+        locationLng: loc.lng,
+        thumbnail: loc._raw?.jpegThumbnail || null
+      };
+      publishStomp('/app/sendChatMessage', newChat);
+
+      try {
+        const oneSignalIds = await fetchPushTargets(0); // sender DB user deyil, 0 veririk
+        if (oneSignalIds.length) {
+          const preview = (cleanMessage || '').slice(0, 140);
+          await sendPushNotification(
+            oneSignalIds,
+            '🪄🪄 Yeni Sifariş!!',
+            `📩 ${preview}`
+          );
+        } else {
+          dlog('No push targets found.');
+        }
+      } catch (pushErr) {
+        console.error('Post-publish push error:', pushErr?.message);
+      }
+      return; // ✔️ mətn emalına düşməsin
     }
 
     // newChat obyektində message sahəsini buradakı kimi dəyiş:
