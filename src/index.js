@@ -13,7 +13,6 @@ const {
   WEBHOOK_SECRET,
   GROUP_A_JID,
   GROUP_A_JID2,
-  GROUP_A_JID3,                       // ⬅️ yeni
   DEBUG = '1',
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   MULTI_EVENT = '0',
