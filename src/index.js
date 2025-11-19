@@ -13,6 +13,7 @@ const {
   WEBHOOK_SECRET,
   GROUP_A_JID,
   GROUP_A_JID2,
+  GROUP_A_JID3,
   DEBUG = '1',
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   MULTI_EVENT = '0',
@@ -23,7 +24,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_A_JID2].filter(Boolean)
+  [GROUP_A_JID, GROUP_A_JID2, GROUP_A_JID3].filter(Boolean)
 );
 
 /* ---------------- mini logger ---------------- */
@@ -415,37 +416,57 @@ async function sendPushNotification(ids, title, body) {
   // normalize incoming ids and keep only valid OneSignal UUIDs
   const input = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
   const validInput = [...new Set(input.filter(isValidUUID))];
-
   if (!validInput.length) {
     dlog('Push skipped: no valid subscription ids (input)');
     return;
   }
 
-  // --- NO v25 filtering anymore ---
+  // fetch users and keep ONLY those with appVersion === 25
+  let v25Ids = [];
+  try {
+    const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
+    const users = Array.isArray(usersRes?.data) ? usersRes.data : [];
 
-  const CHUNK = 2000; // OneSignal limit for include_subscription_ids
-  const batches = [];
-  for (let i = 0; i < validInput.length; i += CHUNK) {
-    batches.push(validInput.slice(i, i + CHUNK));
+    const v25Set = new Set(
+      users
+        .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
+        .map(u => String(u.oneSignal).trim())
+    );
+
+    // intersect provided ids with v25 set
+    v25Ids = validInput.filter(id => v25Set.has(id));
+  } catch (err) {
+    console.error('sendPushNotification: failed to load users; aborting send. Err =', err?.message);
+    return; // hard stop: do NOT send if we can’t verify v25 users
   }
 
-  const fire = async (payload, tag) => {
+  if (!v25Ids.length) {
+    dlog('Push skipped: no recipients with appVersion === 25 (intersection empty)');
+    return;
+  }
+
+  const payload = {
+    app_id: ONE_SIGNAL_APP_ID,
+    include_subscription_ids: v25Ids,
+    headings: { en: title },
+    contents: { en: body },
+    android_channel_id: ANDROID_CHANNEL_ID,
+    data: { screen: 'OrderGroup', groupId: 1 },
+  };
+
+  const fire = async (tag) => {
     try {
-      const res = await axios.post(
-        'https://onesignal.com/api/v1/notifications',
-        payload,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
-          },
-          timeout: 15000,
-        }
-      );
+      const res = await axios.post('https://onesignal.com/api/v1/notifications', payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
+        },
+        timeout: 15000,
+      });
       dlog(`OneSignal push sent (${tag})`, {
         id: res.data?.id,
         recipients: res.data?.recipients,
-        count: payload.include_subscription_ids?.length,
+        count: v25Ids.length,
       });
       return true;
     } catch (e) {
@@ -454,28 +475,13 @@ async function sendPushNotification(ids, title, body) {
     }
   };
 
-  const base = {
-    app_id: ONE_SIGNAL_APP_ID,
-    headings: { en: title },
-    contents: { en: body },
-    android_channel_id: ANDROID_CHANNEL_ID,
-    data: { screen: 'OrderGroup', groupId: 1 },
-  };
-
-  for (let i = 0; i < batches.length; i++) {
-    const include_subscription_ids = batches[i];
-    const payload = { ...base, include_subscription_ids };
-
-    // one attempt + single retry per batch
-    const tag = `batch ${i + 1}/${batches.length}`;
-    const ok = await fire(payload, `${tag} try1`);
-    if (!ok) {
-      await new Promise(r => setTimeout(r, 2000));
-      await fire(payload, `${tag} retry`);
-    }
+  // one attempt + single retry
+  const ok = await fire('try1');
+  if (!ok) {
+    await new Promise(r => setTimeout(r, 2000));
+    await fire('retry');
   }
 }
-
 
 async function fetchPushTargets(senderUserId = 0) {
   try {
