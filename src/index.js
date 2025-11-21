@@ -421,7 +421,7 @@ async function sendPushNotification(ids, title, body) {
     return;
   }
 
-  // fetch users and keep ONLY those with appVersion === 25
+  // fetch users and keep ONLY those with appVersion >= 25
   let v25Ids = [];
   try {
     const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
@@ -429,7 +429,7 @@ async function sendPushNotification(ids, title, body) {
 
     const v25Set = new Set(
       users
-        .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
+        .filter(u => Number(u?.appVersion) >= 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
         .map(u => String(u.oneSignal).trim())
     );
 
@@ -437,11 +437,11 @@ async function sendPushNotification(ids, title, body) {
     v25Ids = validInput.filter(id => v25Set.has(id));
   } catch (err) {
     console.error('sendPushNotification: failed to load users; aborting send. Err =', err?.message);
-    return; // hard stop: do NOT send if we can’t verify v25 users
+    return; // hard stop: do NOT send if we can’t verify users
   }
 
   if (!v25Ids.length) {
-    dlog('Push skipped: no recipients with appVersion === 25 (intersection empty)');
+    dlog('Push skipped: no recipients with appVersion >= 25 (intersection empty)');
     return;
   }
 
@@ -482,6 +482,7 @@ async function sendPushNotification(ids, title, body) {
     await fire('retry');
   }
 }
+
 
 async function fetchPushTargets(senderUserId = 0) {
   try {
