@@ -346,7 +346,6 @@ app.post('/webhook', async (req, res) => {
       try {
         if (DEST_GROUPS.length) {
           for (const jid of DEST_GROUPS) {
-            // əvvəlcə pin göndər
             await sendLocation({
               to: jid,
               latitude: loc.lat,
@@ -354,11 +353,10 @@ app.post('/webhook', async (req, res) => {
               name: loc.name || (newChat.message?.trim() || 'Location'),
               address: loc.address || undefined,
             });
-            // ardınca kontakt info ayrıca text kimi (istəyirsənsə)
-            const phoneForTail = phonePrefixed || '—';
+            // ardınca kontakt info ayrıca text kimi
             await sendText({
               to: jid,
-              text: `Əlaqə nömrəsi: ${phoneForTail}`
+              text: `Əlaqə nömrəsi: ${phonePrefixed}`
             });
           }
         }

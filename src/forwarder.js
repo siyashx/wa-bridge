@@ -19,32 +19,33 @@ export async function sendText({ to, text, imageUrl, videoUrl, documentUrl, audi
   return res.data;
 }
 
-// ✅ REAL pin (WhatsApp location) göndərişi
 export async function sendLocation({ to, latitude, longitude, name, address }) {
   if (process.env.DRY_RUN) {
     console.log('[DRY_RUN] would send location =>', { to, latitude, longitude, name, address });
     return { success: true, data: { status: 'in_progress' } };
   }
 
-  // 1) Birbaşa location endpoint (əgər WASender bunu dəstəkləyirsə)
+  // 1) Sənədləşməyə uyğun: nested "location"
   try {
-    const res = await axios.post(`${WAS_BASE}/api/send-location`, {
+    const res = await axios.post(`${WAS_BASE}/api/send-message`, {
       to,
-      latitude,
-      longitude,
-      name,
-      address,
+      text: name || address || 'Location',
+      location: {
+        latitude,
+        longitude,
+        name,
+        address,
+      },
     }, {
       headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
       timeout: 15000
     });
     return res.data;
   } catch (e) {
-    // 2) Fallback — bəzi hostlar location-ı /api/send-message ilə `type:"location"` kimi qəbul edir
+    // 2) Ayrı endpoint
     try {
-      const res2 = await axios.post(`${WAS_BASE}/api/send-message`, {
+      const res2 = await axios.post(`${WAS_BASE}/api/send-location`, {
         to,
-        type: 'location',
         latitude,
         longitude,
         name,
@@ -55,10 +56,26 @@ export async function sendLocation({ to, latitude, longitude, name, address }) {
       });
       return res2.data;
     } catch (e2) {
-      // 3) Son çarə — xəritə linkini mətn kimi at (pin yox, amma boş qalmasın)
-      const url = `https://maps.google.com/?q=${latitude},${longitude}`;
-      const fallbackText = `${name || address || 'Location'}\n${url}`;
-      return sendText({ to, text: fallbackText });
+      // 3) type: 'location'
+      try {
+        const res3 = await axios.post(`${WAS_BASE}/api/send-message`, {
+          to,
+          type: 'location',
+          latitude,
+          longitude,
+          name,
+          address,
+        }, {
+          headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+          timeout: 15000
+        });
+        return res3.data;
+      } catch (e3) {
+        // 4) Link fallback
+        const url = `https://maps.google.com/?q=${latitude},${longitude}`;
+        const fallbackText = `${name || address || 'Location'}\n${url}`;
+        return sendText({ to, text: fallbackText });
+      }
     }
   }
 }
