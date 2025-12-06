@@ -4,6 +4,7 @@ import express from 'express';
 import axios from 'axios';
 import { Client } from '@stomp/stompjs';
 import WebSocket from 'ws';
+import { sendText } from './forwarder.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -26,6 +27,12 @@ const {
 const ALLOWED_GROUPS = new Set(
   [GROUP_A_JID, GROUP_A_JID2, GROUP_A_JID3].filter(Boolean)
 );
+
+// ✅ Hədəf (forward) qrupların siyahısı
+const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
 /* ---------------- mini logger ---------------- */
 const dlog = (...args) => {
@@ -333,6 +340,36 @@ app.post('/webhook', async (req, res) => {
       } catch (pushErr) {
         console.error('Post-publish push error:', pushErr?.message);
       }
+
+      // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (location üçün)
+      try {
+        if (DEST_GROUPS.length) {
+          const phoneForTail = phonePrefixed || '—';
+          // location üçün mətn: caption/name varsa onu, yoxdursa koordinat
+          const baseText = (newChat.message && newChat.message.trim())
+            ? newChat.message
+            : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
+          const bridged = `${baseText}\n\nƏlaqə nömrəsi: ${phoneForTail}`;
+          for (const jid of DEST_GROUPS) {
+            await sendText({ to: jid, text: bridged });
+          }
+        }
+      } catch (e) {
+        console.error('Forward (location) error:', e?.response?.data || e.message);
+      }
+
+      // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
+      try {
+        if (DEST_GROUPS.length) {
+          const phoneForTail = normalizedPhone || '—';
+          const bridged = `${cleanMessage}\n\nƏlaqə nömrəsi: ${phoneForTail}`;
+          for (const jid of DEST_GROUPS) {
+            await sendText({ to: jid, text: bridged });
+          }
+        }
+      } catch (e) {
+        console.error('Forward (text) error:', e?.response?.data || e.message);
+      }
       return; // Location emal olundu, dayandır
     }
 
@@ -482,7 +519,6 @@ async function sendPushNotification(ids, title, body) {
     await fire('retry');
   }
 }
-
 
 async function fetchPushTargets(senderUserId = 0) {
   try {
