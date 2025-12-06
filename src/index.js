@@ -15,6 +15,7 @@ const {
   GROUP_A_JID,
   GROUP_A_JID2,
   GROUP_A_JID3,
+  GROUP_A_JID4,
   DEBUG = '1',
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   MULTI_EVENT = '0',
@@ -25,7 +26,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_A_JID2, GROUP_A_JID3].filter(Boolean)
+  [GROUP_A_JID, GROUP_A_JID2, GROUP_A_JID3, GROUP_A_JID4].filter(Boolean)
 );
 
 // ✅ Hədəf (forward) qrupların siyahısı
