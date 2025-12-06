@@ -359,18 +359,6 @@ app.post('/webhook', async (req, res) => {
         console.error('Forward (location) error:', e?.response?.data || e.message);
       }
 
-      // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
-      try {
-        if (DEST_GROUPS.length) {
-          const phoneForTail = normalizedPhone || '—';
-          const bridged = `${cleanMessage}\n\nƏlaqə nömrəsi: ${phoneForTail}`;
-          for (const jid of DEST_GROUPS) {
-            await sendText({ to: jid, text: bridged });
-          }
-        }
-      } catch (e) {
-        console.error('Forward (text) error:', e?.response?.data || e.message);
-      }
       return; // Location emal olundu, dayandır
     }
 
@@ -439,6 +427,22 @@ app.post('/webhook', async (req, res) => {
       }
     } catch (pushErr) {
       console.error('Post-publish push error:', pushErr?.message);
+    }
+
+    // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
+    try {
+      if (DEST_GROUPS.length) {
+        const phoneForTail = normalizedPhone || '—';
+        const bridged = `${cleanMessage}\n\nƏlaqə nömrəsi: ${phoneForTail}`;
+        for (const jid of DEST_GROUPS) {
+          await sendText({ to: jid, text: bridged });
+        }
+        dlog('Forwarded text to DEST_GROUPS OK');
+      } else {
+        dlog('Forward skipped: DEST_GROUPS is empty');
+      }
+    } catch (e) {
+      console.error('Forward (text) error:', e?.response?.data || e.message);
     }
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
