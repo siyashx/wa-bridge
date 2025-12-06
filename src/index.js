@@ -355,7 +355,7 @@ app.post('/webhook', async (req, res) => {
             // ardınca kontakt info ayrıca text kimi
             await sendText({
               to: jid,
-              text: `Əlaqə nömrəsi: ${phonePrefixed}`
+              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
             });
           }
         }
@@ -437,7 +437,7 @@ app.post('/webhook', async (req, res) => {
     try {
       if (DEST_GROUPS.length) {
         const phoneForTail = normalizedPhone || '—';
-        const bridged = `${cleanMessage}\n\nƏlaqə nömrəsi: ${phoneForTail}`;
+        const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
         for (const jid of DEST_GROUPS) {
           await sendText({ to: jid, text: bridged });
         }
