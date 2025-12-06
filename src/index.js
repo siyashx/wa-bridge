@@ -4,7 +4,7 @@ import express from 'express';
 import axios from 'axios';
 import { Client } from '@stomp/stompjs';
 import WebSocket from 'ws';
-import { sendText } from './forwarder.js';
+import { sendText, sendLocation } from './forwarder.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -342,17 +342,24 @@ app.post('/webhook', async (req, res) => {
         console.error('Post-publish push error:', pushErr?.message);
       }
 
-      // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (location üçün)
+      // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL LOCATION pin forward
       try {
         if (DEST_GROUPS.length) {
-          const phoneForTail = phonePrefixed || '—';
-          // location üçün mətn: caption/name varsa onu, yoxdursa koordinat
-          const baseText = (newChat.message && newChat.message.trim())
-            ? newChat.message
-            : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
-          const bridged = `${baseText}\n\nƏlaqə nömrəsi: ${phoneForTail}`;
           for (const jid of DEST_GROUPS) {
-            await sendText({ to: jid, text: bridged });
+            // əvvəlcə pin göndər
+            await sendLocation({
+              to: jid,
+              latitude: loc.lat,
+              longitude: loc.lng,
+              name: loc.name || (newChat.message?.trim() || 'Location'),
+              address: loc.address || undefined,
+            });
+            // ardınca kontakt info ayrıca text kimi (istəyirsənsə)
+            const phoneForTail = phonePrefixed || '—';
+            await sendText({
+              to: jid,
+              text: `Əlaqə nömrəsi: ${phoneForTail}`
+            });
           }
         }
       } catch (e) {
