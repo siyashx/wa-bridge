@@ -9,7 +9,6 @@ import { sendText, sendLocation } from './forwarder.js';
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-
 axios.interceptors.request.use((config) => {
   const { method, url, data, headers } = config || {};
   console.log('[HTTP-REQ]', method?.toUpperCase(), url, {
@@ -298,10 +297,7 @@ app.post('/webhook', async (req, res) => {
     const { event, data } = req.body || {};
     L('Event received:', event);
 
-    const allowed =
-      String(MULTI_EVENT) === '1'
-        ? ['messages-group.received', 'messages.received', 'messages.upsert']
-        : ['messages-group.received'];
+    const allowed = ['messages-group.received','messages.received','messages.upsert'];
 
     if (!allowed.includes(event)) {
       L('Skip: not an allowed event', { allowed });
