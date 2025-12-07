@@ -9,8 +9,6 @@ import { sendText, sendLocation } from './forwarder.js';
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// faylın yuxarı hissəsində, import-lardan sonra
-import axios from 'axios';
 
 axios.interceptors.request.use((config) => {
   const { method, url, data, headers } = config || {};
@@ -504,7 +502,6 @@ app.post('/webhook', async (req, res) => {
     LE('Stack:', e?.stack);
   }
 });
-
 
 function isValidUUID(s) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
