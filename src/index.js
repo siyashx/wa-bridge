@@ -9,6 +9,34 @@ import { sendText, sendLocation } from './forwarder.js';
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// faylın yuxarı hissəsində, import-lardan sonra
+import axios from 'axios';
+
+axios.interceptors.request.use((config) => {
+  const { method, url, data, headers } = config || {};
+  console.log('[HTTP-REQ]', method?.toUpperCase(), url, {
+    'content-type': headers?.['Content-Type'] || headers?.['content-type'],
+    'authorization-present': !!headers?.Authorization,
+    // data çox böyük olmasın deyə ilk 1KB:
+    bodyPreview: typeof data === 'string' ? data.slice(0,1024) : JSON.stringify(data || {}).slice(0,1024)
+  });
+  return config;
+});
+
+axios.interceptors.response.use((res) => {
+  console.log('[HTTP-RES]', res?.config?.url, res?.status, {
+    bodyPreview: JSON.stringify(res?.data || {}).slice(0,1024)
+  });
+  return res;
+}, (err) => {
+  const cfg = err?.config || {};
+  console.error('[HTTP-ERR]', cfg?.method?.toUpperCase(), cfg?.url, err?.response?.status, {
+    errBody: JSON.stringify(err?.response?.data || {}).slice(0,2048),
+    message: err?.message
+  });
+  return Promise.reject(err);
+});
+
 const {
   PORT = 4242,
   WEBHOOK_SECRET,
@@ -227,25 +255,50 @@ function logStaticLocation(env, loc) {
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/webhook', async (req, res) => {
+  // ---- helper: request-scoped logger ----
+  const reqId = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const t0 = Date.now();
+  const L = (...args) => console.log(`[WH:${reqId}]`, ...args);
+  const LE = (...args) => console.error(`[WH:${reqId}][ERR]`, ...args);
+
+  // small pretty JSON
+  const j = (v) => {
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  };
+  const previewBody = (() => {
+    const raw = req.body || {};
+    // body preview çox böyüməsin deyə bəzi sahələri qısaldırıq
+    const copy = JSON.parse(JSON.stringify(raw, (k, v) => {
+      if (k === 'jpegThumbnail' && typeof v === 'string') return `[${v.length}B thumbnail]`;
+      return v;
+    }));
+    return j(copy).slice(0, 1200); // 1.2KB limit
+  })();
+
   // Wasender sürətli 200 istəyir
   res.status(200).json({ received: true });
 
   try {
-    dlog('INCOMING /webhook', {
-      headers: {
-        'x-webhook-signature': req.get('x-webhook-signature') ? '[present]' : '[absent]',
-        'content-type': req.get('content-type'),
-      },
-      bodyKeys: Object.keys(req.body || {}),
+    L('INCOMING /webhook');
+    L('Headers:', {
+      'x-webhook-signature': req.get('x-webhook-signature') ? '[present]' : '[absent]',
+      'content-type': req.get('content-type'),
+      'content-length': req.get('content-length'),
     });
+    L('Body preview:', previewBody);
 
     if (!verifySignature(req)) {
-      dlog('Signature invalid, ignoring payload');
+      L('Signature invalid → ignore');
       return;
     }
+    L('Signature OK');
 
     const { event, data } = req.body || {};
-    dlog('Event received:', event);
+    L('Event received:', event);
 
     const allowed =
       String(MULTI_EVENT) === '1'
@@ -253,53 +306,56 @@ app.post('/webhook', async (req, res) => {
         : ['messages-group.received'];
 
     if (!allowed.includes(event)) {
-      dlog('Skip: not an allowed message event');
+      L('Skip: not an allowed event', { allowed });
       return;
     }
 
     const env = normalizeEnvelope(data);
+    L('Envelope:', {
+      remoteJid: env.remoteJid,
+      participant: env.participant,
+      id: env.id,
+      fromMe: env.fromMe,
+      hasMsg: !!env.msg,
+    });
 
-    // Özümüzdən çıxanları at
     if (env.fromMe) {
-      dlog('Skip: fromMe=true');
+      L('Skip: fromMe=true');
       return;
     }
 
     if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) {
-      dlog('Skip: remoteJid not in allowed set', { got: env.remoteJid, allowed: [...ALLOWED_GROUPS] });
+      L('Skip: remoteJid not allowed', { got: env.remoteJid, allowed: [...ALLOWED_GROUPS] });
       return;
     }
+    L('remoteJid allowed');
 
-    // Dedup
     if (seenRecently(env.id)) {
-      dlog('Skip: duplicate message id within window', { id: env.id });
+      L('Skip: duplicate within window', { id: env.id });
       return;
     }
+    L('Dedup OK');
 
-    // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
-    // sonra participant @lid
+    // Phone parse
     const foundSnet = findFirstSnetJidDeep(req.body);
-    dlog('findFirstSnetJidDeep:', { foundSnet });
-
     let phone =
       parsePhoneFromSNetJid(foundSnet) ||
-      parsePhoneFromSNetJid(env.participant);
+      parsePhoneFromSNetJid(env.participant) ||
+      parseDigitsFromLid(env.participant) ||
+      null;
+    const normalizedPhone = phone ? `+${phone}` : '';
+    L('Phone parsed:', { foundSnet, phone: normalizedPhone || '(none)' });
 
-    if (!phone) phone = parseDigitsFromLid(env.participant);
-
-    // 1) ƏVVƏL statik location olub-olmadığını yoxla
+    // LOCATION?
     const loc = getStaticLocation(env.msg);
-
     if (loc) {
-      logStaticLocation(env, loc); // (istəsən saxla)
+      L('Location detected:', {
+        lat: loc.lat, lng: loc.lng,
+        name: loc.name, address: loc.address, caption: loc.caption,
+      });
 
       const timestamp = formatBakuTimestamp();
-      const normalizedPhone = (parsePhoneFromSNetJid(findFirstSnetJidDeep(req.body)) ||
-        parsePhoneFromSNetJid(env.participant) ||
-        parseDigitsFromLid(env.participant) ||
-        '');
-      const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
-
+      const phonePrefixed = normalizedPhone || '';
       const newChat = {
         id: Date.now(),
         groupId: "0",
@@ -313,38 +369,37 @@ app.post('/webhook', async (req, res) => {
         message: loc.caption || loc.name || "",
         timestamp,
         isCompleted: false,
-        // yalnız backend üçün:
         locationLat: loc.lat,
         locationLng: loc.lng,
         thumbnail: loc._raw?.jpegThumbnail || null
       };
 
+      L('STOMP publish (location) → /app/sendChatMessage');
       publishStomp('/app/sendChatMessage', newChat);
 
-      // push preview: caption/name varsa onu, yoxdursa koordinatı göstər
       const preview = (newChat.message && newChat.message.trim())
         ? newChat.message.slice(0, 140)
         : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
 
       try {
         const oneSignalIds = await fetchPushTargets(0);
+        L('Push targets (after location publish):', { count: oneSignalIds.length });
         if (oneSignalIds.length) {
-          await sendPushNotification(
-            oneSignalIds,
-            '🪄🪄 Yeni Sifariş!!',
-            `📍 ${preview}`
-          );
+          await sendPushNotification(oneSignalIds, '🪄🪄 Yeni Sifariş!!', `📍 ${preview}`);
+          L('OneSignal push (location) sent');
         } else {
-          dlog('No push targets found.');
+          L('No push targets for location');
         }
       } catch (pushErr) {
-        console.error('Post-publish push error:', pushErr?.message);
+        LE('Post-publish push error (location):', pushErr?.response?.data || pushErr.message);
       }
 
-      // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL LOCATION pin forward
+      // Forward REAL pin + contact text
       try {
         if (DEST_GROUPS.length) {
+          L('Forward location to DEST_GROUPS:', DEST_GROUPS);
           for (const jid of DEST_GROUPS) {
+            L(' → sendLocation', { to: jid });
             await sendLocation({
               to: jid,
               latitude: loc.lat,
@@ -352,106 +407,104 @@ app.post('/webhook', async (req, res) => {
               name: loc.name || (newChat.message?.trim() || 'Location'),
               address: loc.address || undefined,
             });
-            // ardınca kontakt info ayrıca text kimi
-            await sendText({
-              to: jid,
-              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
-            });
+            L('   sendLocation OK');
+
+            const tail = `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`;
+            L(' → sendText (contact)', { to: jid, text: tail });
+            await sendText({ to: jid, text: tail });
+            L('   sendText OK');
           }
+          L('Forward (location) finished');
+        } else {
+          L('Forward (location) skipped: empty DEST_GROUPS');
         }
       } catch (e) {
-        console.error('Forward (location) error:', e?.response?.data || e.message);
+        LE('Forward (location) error:', e?.response?.data || e.message);
       }
 
-      return; // Location emal olundu, dayandır
-    }
-
-    // 2) Sonra mətn mesajlarını emal et
-    const textBody = extractText(env.msg);
-    if (!textBody) {
-      dlog('Skip: no text in message');
+      L('DONE (location). Duration(ms)=', Date.now() - t0);
       return;
     }
 
-    // 🔒 Filtr: '+' və ya 'tapildi/tapıldı' varsa sifarişi göndərmə
+    // TEXT?
+    const textBody = extractText(env.msg);
+    if (!textBody) {
+      L('Skip: no text in message');
+      L('DONE (no-op). Duration(ms)=', Date.now() - t0);
+      return;
+    }
+
     if (shouldBlockMessage(textBody)) {
-      dlog('Skip: blocked by content filter (plus/tapildi)');
+      L('Skip: blocked by content filter', { textPreview: textBody.slice(0, 120) });
+      L('DONE (blocked). Duration(ms)=', Date.now() - t0);
+      return;
+    }
+
+    const cleanMessage = String(textBody);
+    if (await isDuplicateChatMessage(cleanMessage)) {
+      L('Skip: duplicate text (DB exists)');
+      L('DONE (dup). Duration(ms)=', Date.now() - t0);
       return;
     }
 
     const timestamp = formatBakuTimestamp();
-
-    // Mesaj olduğu kimi qalsın, nömrəni ayrıca field kimi verək
-    const normalizedPhone = phone ? `+${phone}` : '';
-    const cleanMessage = String(textBody);
-
-    // 🔁 dublikat varsa dayandır
-    if (await isDuplicateChatMessage(cleanMessage)) {
-      dlog('Skip: duplicate message text exists in /api/chats');
-      return;
-    }
-
-    // newChat obyektində message sahəsini buradakı kimi dəyiş:
     const newChat = {
       id: Date.now(),
       groupId: "0",
       userId: 2,
       username: 'Sifariş Qrupu İstifadəçisi',
-      phone: normalizedPhone,           // +994… varsa burada
+      phone: normalizedPhone,
       isSeenIds: [],
       messageType: "text",
       isReply: "false",
       userType: "customer",
-      message: cleanMessage,            // yalnız sifariş mətni
+      message: cleanMessage,
       timestamp,
       isCompleted: false,
     };
 
-    dlog('Outgoing POST payload preview:', {
-      to: `${TARGET_API_BASE}/api/chat`,
-      newChat,
-    });
-
-    // ✅ Mobil “sendMessageToSocket” ilə eyni hərəkət: WebSocket (STOMP) publish
-    // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
+    L('STOMP publish (text) → /app/sendChatMessage');
     publishStomp('/app/sendChatMessage', newChat);
 
-    // 🔔 Publish-dən sonra push bildirişi (mobil loqika ilə eyni filtr)
     try {
-      const oneSignalIds = await fetchPushTargets(0); // sender DB user deyil, 0 veririk
+      const oneSignalIds = await fetchPushTargets(0);
+      L('Push targets (after text publish):', { count: oneSignalIds.length });
       if (oneSignalIds.length) {
-        const preview = (cleanMessage || '').slice(0, 140);
-        await sendPushNotification(
-          oneSignalIds,
-          '🪄🪄 Yeni Sifariş!!',
-          `📩 ${preview}`
-        );
+        await sendPushNotification(oneSignalIds, '🪄🪄 Yeni Sifariş!!', `📩 ${cleanMessage.slice(0, 140)}`);
+        L('OneSignal push (text) sent');
       } else {
-        dlog('No push targets found.');
+        L('No push targets for text');
       }
     } catch (pushErr) {
-      console.error('Post-publish push error:', pushErr?.message);
+      LE('Post-publish push error (text):', pushErr?.response?.data || pushErr.message);
     }
 
-    // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
+    // Forward text + phone
     try {
       if (DEST_GROUPS.length) {
+        L('Forward text to DEST_GROUPS:', DEST_GROUPS);
         const phoneForTail = normalizedPhone || '—';
         const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
         for (const jid of DEST_GROUPS) {
+          L(' → sendText', { to: jid, len: bridged.length });
           await sendText({ to: jid, text: bridged });
+          L('   sendText OK');
         }
-        dlog('Forwarded text to DEST_GROUPS OK');
+        L('Forward (text) finished');
       } else {
-        dlog('Forward skipped: DEST_GROUPS is empty');
+        L('Forward (text) skipped: empty DEST_GROUPS');
       }
     } catch (e) {
-      console.error('Forward (text) error:', e?.response?.data || e.message);
+      LE('Forward (text) error:', e?.response?.data || e.message);
     }
+
+    L('DONE (text). Duration(ms)=', Date.now() - t0);
   } catch (e) {
-    console.error('Webhook handler error:', e?.response?.data || e.message);
+    LE('Webhook handler fatal error:', e?.response?.data || e.message);
+    LE('Stack:', e?.stack);
   }
 });
+
 
 function isValidUUID(s) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -649,13 +702,13 @@ function publishStomp(destination, payloadObj) {
   if (stompClient && stompReady) {
     try {
       stompClient.publish({ destination, body });
-      dlog('STOMP publish ok:', { destination });
+      dlog('[STOMP] publish OK', { destination, bytes: body.length });
     } catch (e) {
-      console.error('STOMP publish error, queueing:', e?.message);
+      console.error('[STOMP] publish error, queueing:', e?.message);
       publishQueue.push({ destination, body });
     }
   } else {
-    dlog('STOMP not ready, queueing publish');
+    dlog('[STOMP] not ready, queueing publish', { destination, bytes: body.length });
     publishQueue.push({ destination, body });
     initStomp();
   }
@@ -668,10 +721,17 @@ initStomp();
 
 app.listen(PORT, () => {
   console.log(`Webhook server running on :${PORT}`);
-  console.log('GROUP_A_JID =>', GROUP_A_JID);
-  console.log('TARGET_API_BASE =>', TARGET_API_BASE);
-  if (process.env.DRY_RUN) {
-    console.log('*** DRY_RUN is ON (no real messages will be sent) ***');
-  }
+  console.log('ALLOWED_GROUPS =>', [...ALLOWED_GROUPS]);
+  console.log('DEST_GROUPS    =>', DEST_GROUPS);
+  console.log('TARGET_API_BASE=>', TARGET_API_BASE);
+  console.log('WS_URL         =>', process.env.WS_URL);
+  console.log('DRY_RUN        =>', process.env.DRY_RUN ? 'ON' : 'OFF');
+  if (!process.env.WEBHOOK_SECRET) console.warn('!! WEBHOOK_SECRET is EMPTY');
+  if (!process.env.WASENDER_API_KEY) console.warn('!! WASENDER_API_KEY is EMPTY');
+  if (process.env.DRY_RUN) console.log('*** DRY_RUN is ON (no real messages will be sent) ***');
 });
+
+// global error hooks
+process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
