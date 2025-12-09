@@ -105,6 +105,11 @@ function parseDigitsFromLid(jid) {
   return out;
 }
 
+function getDestGroupsFor(sourceJid) {
+  // Mənbə hansı qrupdursa, ona geri göndərməyək
+  return DEST_GROUPS.filter(jid => jid !== sourceJid);
+}
+
 // JSON içində ilk s.whatsapp.net JID-ni tap
 function findFirstSnetJidDeep(any) {
   if (any == null) return null;
@@ -343,8 +348,9 @@ app.post('/webhook', async (req, res) => {
 
       // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL LOCATION pin forward
       try {
-        if (DEST_GROUPS.length) {
-          for (const jid of DEST_GROUPS) {
+        const targets = getDestGroupsFor(env.remoteJid);
+        if (targets.length) {
+          for (const jid of targets) {
             await sendLocation({
               to: jid,
               latitude: loc.lat,
@@ -358,6 +364,8 @@ app.post('/webhook', async (req, res) => {
               text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
             });
           }
+        } else {
+          dlog('Forward skipped: no targets');
         }
       } catch (e) {
         console.error('Forward (location) error:', e?.response?.data || e.message);
@@ -435,16 +443,23 @@ app.post('/webhook', async (req, res) => {
 
     // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
     try {
-      if (DEST_GROUPS.length) {
-        const phoneForTail = normalizedPhone || '—';
-        const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-        for (const jid of DEST_GROUPS) {
-          await sendText({ to: jid, text: bridged });
+      const phoneForTail = normalizedPhone || '—';
+      const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
+
+      try {
+        const targets = getDestGroupsFor(env.remoteJid); // mənbə qrup burada
+        if (targets.length) {
+          for (const jid of targets) {
+            await sendText({ to: jid, text: bridged });
+          }
+          dlog('Forwarded text', { from: env.remoteJid, to: targets });
+        } else {
+          dlog('Forward skipped: no targets');
         }
-        dlog('Forwarded text to DEST_GROUPS OK');
-      } else {
-        dlog('Forward skipped: DEST_GROUPS is empty');
+      } catch (e) {
+        console.error('Forward (text) error:', e?.response?.data || e.message);
       }
+
     } catch (e) {
       console.error('Forward (text) error:', e?.response?.data || e.message);
     }
@@ -559,26 +574,41 @@ async function fetchPushTargets(senderUserId = 0) {
 function shouldBlockMessage(raw) {
   if (!raw) return false;
 
-  // — normalize (diakritik və böyük/kiçik hərflər)
-  const text = String(raw).normalize('NFKC');
-  const lower = text.toLowerCase();
+  const text = String(raw).normalize('NFKC');   // diakritik normallaşdırma
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
 
-  // 2.1) LƏĞV / STOP sinonimləri → blokla
-  // (ləğv, ləgv, legv, stop – böyük/kiçik fərq etmir)
-  const cancelRe = /\b(l[əe]ğ?v|stop)\b/i;
-  if (cancelRe.test(text)) return true;
+  // 1) Tam olaraq bu cavablar gəlsə → blokla
+  const exactBlockSet = new Set([
+    'tapıldı',
+    'tapildi',
+    'verildi',
+    'verdim',
+    'hazır',
+    'hazir',
+    'hazirdi',
+    'hazırdır',
+    'hazirdir',
+    '✅',
+    '➕',
+  ]);
 
-  // 2.2) "tapildi/tapıldı" → blokla
-  if (/\btap(i|ı)ld(i|ı)\b/i.test(text)) return true;
+  if (exactBlockSet.has(lower)) return true;
 
-  // 2.3) Yalnız "+" (və ya yalnız + işarələrindən ibarət) → blokla
+  // 2) Yalnız + işarələrindən ibarət mesajlar → blokla
   if (/^\s*\++\s*$/.test(text)) return true;
 
-  // 2.4) "+994..." kimi telefon nömrəsi daşıyırsa → blokla
+  // 3) Ləğv / Legv / stop → blokla
+  const cancelRe = /\b(l[əe]ğ?v|legv|stop)\b/i;
+  if (cancelRe.test(text)) return true;
+
+  // 4) "tapildi/tapıldı" içində keçirsə (məsələn cümlə kimi)
+  if (/\btap(i|ı)ld(i|ı)\b/i.test(text)) return true;
+
+  // 5) +994 ilə başlayan telefon nömrəsi varsa → blokla
   if (/\+994[\d\s-]{7,}/.test(lower)) return true;
 
-  // 2.5) Əks halda (məs: "… + wolt …") → İCAZƏ VER
-  // yəni mesajın içində + işarəsi olsa da, əgər yanında rəqəm başlamırsa bloklamırıq
+  // qalan hər şeyə icazə ver
   return false;
 }
 
