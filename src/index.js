@@ -54,6 +54,43 @@ function seenRecently(id) {
   return false;
 }
 
+// A mesaj id -> (destJid -> wasender msgId) xəritəsi
+const forwardMap = new Map(); // key -> { ts, dest: { [jid]: msgId } }
+const FORWARDMAP_TTL = 24 * 60 * 60 * 1000; // 24 saat
+
+function fmKey(sourceGroupJid, sourceMsgId) {
+  return `${sourceGroupJid}::${sourceMsgId}`;
+}
+
+function forwardMapPut(sourceGroupJid, sourceMsgId, destJid, msgId) {
+  if (!sourceMsgId || !destJid || !msgId) return;
+  const key = fmKey(sourceGroupJid, sourceMsgId);
+  const now = Date.now();
+  const cur = forwardMap.get(key) || { ts: now, dest: {} };
+  cur.ts = now;
+  cur.dest[destJid] = msgId;
+  forwardMap.set(key, cur);
+
+  // sadə cleanup
+  if (forwardMap.size > 20000) {
+    const cutoff = now - FORWARDMAP_TTL;
+    for (const [k, v] of forwardMap) {
+      if (!v?.ts || v.ts < cutoff) forwardMap.delete(k);
+    }
+  }
+}
+
+function forwardMapGet(sourceGroupJid, sourceMsgId, destJid) {
+  const key = fmKey(sourceGroupJid, sourceMsgId);
+  const rec = forwardMap.get(key);
+  if (!rec) return null;
+  if (Date.now() - rec.ts > FORWARDMAP_TTL) {
+    forwardMap.delete(key);
+    return null;
+  }
+  return rec.dest?.[destJid] || null;
+}
+
 /* ---------------- helpers ---------------- */
 
 // İmza
@@ -335,9 +372,7 @@ app.post('/webhook', async (req, res) => {
     const cleanMessage = String(textBody);
 
     // 🔁 dublikat varsa dayandır
-    if (await isDuplicateChatMessage(cleanMessage)) {
-      return;
-    }
+    if (!isReply && await isDuplicateChatMessage(cleanMessage)) return;
 
     // newChat obyektində message sahəsini buradakı kimi dəyiş:
     const newChat = {
@@ -378,15 +413,7 @@ app.post('/webhook', async (req, res) => {
     try {
       const phoneForTail = normalizedPhone || '—';
 
-      let bridged = cleanMessage;
-
-      // ✅ reply varsa quoted mesajı üstə yaz
-      if (isReply) {
-        const qb = formatQuoteBlock(quoted);
-        if (qb) {
-          bridged = `${qb}\n\n${cleanMessage}`;
-        }
-      }
+      let bridged = cleanMessage; // reply bubble özü kifayətdir
 
       // ✅ reply deyilsə əlaqə əlavə et, reply-dirsə etmə
       if (!isReply) {
@@ -397,8 +424,27 @@ app.post('/webhook', async (req, res) => {
         const targets = getDestGroupsFor(env.remoteJid);
         if (targets.length) {
           for (const jid of targets) {
-            await sendText({ to: jid, text: bridged });
+            let replyTo = undefined;
+
+            // ✅ əgər incoming mesaj reply-dirsə, A qrupundakı stanzaId -> dest qrup üçün msgId tap
+            if (isReply && quoted?.stanzaId) {
+              replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
+            }
+
+            // ✅ replyTo varsa REAL reply bubble olacaq
+            const resp = await sendText({
+              to: jid,
+              text: bridged,
+              replyTo,
+            });
+
+            // ✅ yalnız ORİJİNAL (reply olmayan) mesajlarda mapping saxla
+            if (!isReply) {
+              const msgId = resp?.data?.msgId;
+              forwardMapPut(env.remoteJid, env.id, jid, msgId);
+            }
           }
+
         }
       } catch (e) {
         console.error('Forward (text) error:', e?.response?.data || e.message);
@@ -571,13 +617,16 @@ async function isDuplicateChatMessage(messageText) {
 function extractQuoted(msg) {
   if (!msg) return null;
 
+  const core = msg.viewOnceMessageV2?.message || msg;
+
   // reply adətən extendedTextMessage.contextInfo içində olur
-  const ctx = msg.extendedTextMessage?.contextInfo
-    || msg.imageMessage?.contextInfo
-    || msg.videoMessage?.contextInfo
-    || msg.documentMessage?.contextInfo
-    || msg.audioMessage?.contextInfo
-    || null;
+  const ctx =
+    core.extendedTextMessage?.contextInfo ||
+    core.imageMessage?.contextInfo ||
+    core.videoMessage?.contextInfo ||
+    core.documentMessage?.contextInfo ||
+    core.audioMessage?.contextInfo ||
+    null;
 
   const q = ctx?.quotedMessage;
   if (!q) return null;

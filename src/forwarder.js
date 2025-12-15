@@ -5,17 +5,17 @@ const API_KEY = process.env.WASENDER_API_KEY;
 
 export async function sendText({ to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions, replyTo }) {
 
-  return { success: true, data: { status: 'in_progress' } };
+  const payload = { to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions, replyTo };
+  Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]); if (process.env.DRY_RUN) {
+    return { success: true, data: { status: 'in_progress' } };
+  }
+
+  const res = await axios.post(`${WAS_BASE}/api/send-message`, payload, {
+    headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+    timeout: 15000
+  });
+  return res.data;
 }
-
-const payload = { to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions, replyTo };
-Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
-
-const res = await axios.post(`${WAS_BASE}/api/send-message`, payload, {
-  headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-  timeout: 15000
-});
-return res.data;
 
 export async function sendLocation({ to, latitude, longitude, name, address }) {
   if (process.env.DRY_RUN) {
