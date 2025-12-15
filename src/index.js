@@ -34,11 +34,6 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
-/* ---------------- mini logger ---------------- */
-const dlog = (...args) => {
-  if (String(DEBUG) === '1') console.log(new Date().toISOString(), ...args);
-};
-
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
@@ -70,7 +65,6 @@ function verifySignature(req) {
     req.get('x-was-signature');
 
   const ok = !!sig && !!WEBHOOK_SECRET && sig === WEBHOOK_SECRET;
-  dlog('verifySignature:', { ok, hasSig: !!sig });
   return ok;
 }
 
@@ -83,7 +77,6 @@ function extractText(msg) {
     msg.imageMessage?.caption ||
     msg.videoMessage?.caption ||
     null;
-  dlog('extractText:', { hasMsg: !!msg, textPreview: txt?.slice?.(0, 120) });
   return txt;
 }
 
@@ -92,7 +85,6 @@ function parsePhoneFromSNetJid(jid) {
   if (!jid) return null;
   const m = String(jid).match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
   const out = m ? m[1] : null;
-  dlog('parsePhoneFromSNetJid:', { jid, out });
   return out;
 }
 
@@ -101,7 +93,6 @@ function parseDigitsFromLid(jid) {
   if (!jid) return null;
   const m = String(jid).match(/^(\d+)@lid$/);
   const out = m ? m[1] : String(jid).replace(/@.*/, '');
-  dlog('parseDigitsFromLid:', { jid, out });
   return out;
 }
 
@@ -149,13 +140,6 @@ function normalizeEnvelope(data) {
     fromMe: !!key.fromMe || !!env.fromMe,
     raw: env,
   };
-  dlog('normalizeEnvelope:', {
-    remoteJid: out.remoteJid,
-    participant: out.participant,
-    hasMsg: !!out.msg,
-    id: out.id,
-    fromMe: out.fromMe,
-  });
   return out;
 }
 
@@ -205,28 +189,6 @@ function getStaticLocation(msg) {
   };
 }
 
-function logStaticLocation(env, loc) {
-  dlog('--- STATIC LOCATION DETECTED ---');
-  dlog('from:', {
-    remoteJid: env.remoteJid,
-    participant: env.participant,
-    id: env.id,
-  });
-
-  // Konsola “oxunaqlı” JSON veririk
-  try {
-    console.log('locationMessage RAW =', JSON.stringify(loc._raw, null, 2));
-  } catch { /* no-op */ }
-
-  // TL;DR görünüş
-  dlog('loc.short:', {
-    lat: loc.lat, lng: loc.lng,
-    name: loc.name, address: loc.address,
-    caption: loc.caption, url: loc.url,
-  });
-  dlog('--------------------------------');
-}
-
 /* ---------------- routes ---------------- */
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -236,21 +198,12 @@ app.post('/webhook', async (req, res) => {
   res.status(200).json({ received: true });
 
   try {
-    dlog('INCOMING /webhook', {
-      headers: {
-        'x-webhook-signature': req.get('x-webhook-signature') ? '[present]' : '[absent]',
-        'content-type': req.get('content-type'),
-      },
-      bodyKeys: Object.keys(req.body || {}),
-    });
 
     if (!verifySignature(req)) {
-      dlog('Signature invalid, ignoring payload');
       return;
     }
 
     const { event, data } = req.body || {};
-    dlog('Event received:', event);
 
     const allowed =
       String(MULTI_EVENT) === '1'
@@ -258,7 +211,6 @@ app.post('/webhook', async (req, res) => {
         : ['messages-group.received'];
 
     if (!allowed.includes(event)) {
-      dlog('Skip: not an allowed message event');
       return;
     }
 
@@ -266,25 +218,21 @@ app.post('/webhook', async (req, res) => {
 
     // Özümüzdən çıxanları at
     if (env.fromMe) {
-      dlog('Skip: fromMe=true');
       return;
     }
 
     if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) {
-      dlog('Skip: remoteJid not in allowed set', { got: env.remoteJid, allowed: [...ALLOWED_GROUPS] });
       return;
     }
 
     // Dedup
     if (seenRecently(env.id)) {
-      dlog('Skip: duplicate message id within window', { id: env.id });
       return;
     }
 
     // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
     // sonra participant @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
-    dlog('findFirstSnetJidDeep:', { foundSnet });
 
     let phone =
       parsePhoneFromSNetJid(foundSnet) ||
@@ -296,7 +244,6 @@ app.post('/webhook', async (req, res) => {
     const loc = getStaticLocation(env.msg);
 
     if (loc) {
-      logStaticLocation(env, loc); // (istəsən saxla)
 
       const timestamp = formatBakuTimestamp();
       const normalizedPhone = (parsePhoneFromSNetJid(findFirstSnetJidDeep(req.body)) ||
@@ -339,8 +286,6 @@ app.post('/webhook', async (req, res) => {
             '🪄🪄 Yeni Sifariş!!',
             `📍 ${preview}`
           );
-        } else {
-          dlog('No push targets found.');
         }
       } catch (pushErr) {
         console.error('Post-publish push error:', pushErr?.message);
@@ -364,8 +309,6 @@ app.post('/webhook', async (req, res) => {
               text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
             });
           }
-        } else {
-          dlog('Forward skipped: no targets');
         }
       } catch (e) {
         console.error('Forward (location) error:', e?.response?.data || e.message);
@@ -374,16 +317,14 @@ app.post('/webhook', async (req, res) => {
       return; // Location emal olundu, dayandır
     }
 
-    // 2) Sonra mətn mesajlarını emal et
     const textBody = extractText(env.msg);
-    if (!textBody) {
-      dlog('Skip: no text in message');
-      return;
-    }
+    if (!textBody) return;
 
-    // 🔒 Filtr: '+' və ya 'tapildi/tapıldı' varsa sifarişi göndərmə
-    if (shouldBlockMessage(textBody)) {
-      dlog('Skip: blocked by content filter (plus/tapildi)');
+    const quoted = extractQuoted(env.msg);      // ✅ reply info
+    const isReply = !!quoted;
+
+    // ✅ reply-dirsə filter işləməsin
+    if (!isReply && shouldBlockMessage(textBody)) {
       return;
     }
 
@@ -395,7 +336,6 @@ app.post('/webhook', async (req, res) => {
 
     // 🔁 dublikat varsa dayandır
     if (await isDuplicateChatMessage(cleanMessage)) {
-      dlog('Skip: duplicate message text exists in /api/chats');
       return;
     }
 
@@ -415,11 +355,6 @@ app.post('/webhook', async (req, res) => {
       isCompleted: false,
     };
 
-    dlog('Outgoing POST payload preview:', {
-      to: `${TARGET_API_BASE}/api/chat`,
-      newChat,
-    });
-
     // ✅ Mobil “sendMessageToSocket” ilə eyni hərəkət: WebSocket (STOMP) publish
     // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
     publishStomp('/app/sendChatMessage', newChat);
@@ -434,8 +369,6 @@ app.post('/webhook', async (req, res) => {
           '🪄🪄 Yeni Sifariş!!',
           `📩 ${preview}`
         );
-      } else {
-        dlog('No push targets found.');
       }
     } catch (pushErr) {
       console.error('Post-publish push error:', pushErr?.message);
@@ -444,17 +377,28 @@ app.post('/webhook', async (req, res) => {
     // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
     try {
       const phoneForTail = normalizedPhone || '—';
-      const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
+
+      let bridged = cleanMessage;
+
+      // ✅ reply varsa quoted mesajı üstə yaz
+      if (isReply) {
+        const qb = formatQuoteBlock(quoted);
+        if (qb) {
+          bridged = `${qb}\n\n${cleanMessage}`;
+        }
+      }
+
+      // ✅ reply deyilsə əlaqə əlavə et, reply-dirsə etmə
+      if (!isReply) {
+        bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
+      }
 
       try {
-        const targets = getDestGroupsFor(env.remoteJid); // mənbə qrup burada
+        const targets = getDestGroupsFor(env.remoteJid);
         if (targets.length) {
           for (const jid of targets) {
             await sendText({ to: jid, text: bridged });
           }
-          dlog('Forwarded text', { from: env.remoteJid, to: targets });
-        } else {
-          dlog('Forward skipped: no targets');
         }
       } catch (e) {
         console.error('Forward (text) error:', e?.response?.data || e.message);
@@ -478,7 +422,6 @@ async function sendPushNotification(ids, title, body) {
   const input = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
   const validInput = [...new Set(input.filter(isValidUUID))];
   if (!validInput.length) {
-    dlog('Push skipped: no valid subscription ids (input)');
     return;
   }
 
@@ -502,7 +445,6 @@ async function sendPushNotification(ids, title, body) {
   }
 
   if (!v25Ids.length) {
-    dlog('Push skipped: no recipients with appVersion >= 25 (intersection empty)');
     return;
   }
 
@@ -523,11 +465,6 @@ async function sendPushNotification(ids, title, body) {
           'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
         },
         timeout: 15000,
-      });
-      dlog(`OneSignal push sent (${tag})`, {
-        id: res.data?.id,
-        recipients: res.data?.recipients,
-        count: v25Ids.length,
       });
       return true;
     } catch (e) {
@@ -630,6 +567,55 @@ async function isDuplicateChatMessage(messageText) {
   }
 }
 
+// Reply/Quoted message çıxar
+function extractQuoted(msg) {
+  if (!msg) return null;
+
+  // reply adətən extendedTextMessage.contextInfo içində olur
+  const ctx = msg.extendedTextMessage?.contextInfo
+    || msg.imageMessage?.contextInfo
+    || msg.videoMessage?.contextInfo
+    || msg.documentMessage?.contextInfo
+    || msg.audioMessage?.contextInfo
+    || null;
+
+  const q = ctx?.quotedMessage;
+  if (!q) return null;
+
+  // quoted mətni tapmağa çalış
+  const qt =
+    q.conversation ||
+    q.extendedTextMessage?.text ||
+    q.imageMessage?.caption ||
+    q.videoMessage?.caption ||
+    q.documentMessage?.caption ||
+    q.documentMessage?.fileName ||
+    q.audioMessage?.ptt && '[voice]' ||
+    null;
+
+  // quoted göndərənin jid-i (bəzən ctx.participant)
+  const quotedParticipant = ctx?.participant || null;
+
+  return {
+    text: qt,
+    participant: quotedParticipant,
+    stanzaId: ctx?.stanzaId || null,
+    _raw: q,
+  };
+}
+
+function isReplyMessage(msg) {
+  return !!extractQuoted(msg);
+}
+
+// UI/forward üçün quote formatı
+function formatQuoteBlock(q) {
+  if (!q?.text) return null;
+  // WhatsApp üslubu kimi ">" ilə
+  const lines = String(q.text).split('\n').map(l => `> ${l}`).join('\n');
+  return lines;
+}
+
 /* ---------------- STOMP (WebSocket) client ---------------- */
 let stompClient = null;
 let stompReady = false;
@@ -647,7 +633,6 @@ function initStomp() {
     heartbeatOutgoing: 20000,
     onConnect: () => {
       stompReady = true;
-      dlog('STOMP connected');
       // queue boşalt
       while (publishQueue.length) {
         const { destination, body } = publishQueue.shift();
@@ -664,10 +649,8 @@ function initStomp() {
     },
     onWebSocketClose: () => {
       stompReady = false;
-      dlog('STOMP socket closed, will auto-reconnect…');
     },
     debug: (str) => {
-      if (String(DEBUG) === '1') console.log('[STOMP]', str);
     },
   });
 
@@ -679,13 +662,11 @@ function publishStomp(destination, payloadObj) {
   if (stompClient && stompReady) {
     try {
       stompClient.publish({ destination, body });
-      dlog('STOMP publish ok:', { destination });
     } catch (e) {
       console.error('STOMP publish error, queueing:', e?.message);
       publishQueue.push({ destination, body });
     }
   } else {
-    dlog('STOMP not ready, queueing publish');
     publishQueue.push({ destination, body });
     initStomp();
   }
@@ -696,12 +677,5 @@ initStomp();
 
 /* ---------------- start ---------------- */
 
-app.listen(PORT, () => {
-  console.log(`Webhook server running on :${PORT}`);
-  console.log('GROUP_A_JID =>', GROUP_A_JID);
-  console.log('TARGET_API_BASE =>', TARGET_API_BASE);
-  if (process.env.DRY_RUN) {
-    console.log('*** DRY_RUN is ON (no real messages will be sent) ***');
-  }
-});
+app.listen(PORT, () => { });
 

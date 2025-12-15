@@ -5,7 +5,6 @@ const API_KEY = process.env.WASENDER_API_KEY;
 
 export async function sendText({ to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions }) {
   if (process.env.DRY_RUN) {
-    console.log('[DRY_RUN] would send =>', { to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions });
     return { success: true, data: { status: 'in_progress' } };
   }
 
@@ -21,7 +20,6 @@ export async function sendText({ to, text, imageUrl, videoUrl, documentUrl, audi
 
 export async function sendLocation({ to, latitude, longitude, name, address }) {
   if (process.env.DRY_RUN) {
-    console.log('[DRY_RUN] would send location =>', { to, latitude, longitude, name, address });
     return { success: true, data: { status: 'in_progress' } };
   }
 
