@@ -34,6 +34,49 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
+/* ---------------- WA send queue (5s) ---------------- */
+const SEND_GAP_MS = Number(process.env.SEND_GAP_MS || 5000);
+
+// hər dest üçün ayrı növbə (ən stabil variant)
+const sendQueues = new Map(); // jid -> { busy:boolean, q: Array<{fn, resolve, reject}> }
+
+function getQueue(jid) {
+  if (!sendQueues.has(jid)) sendQueues.set(jid, { busy: false, q: [] });
+  return sendQueues.get(jid);
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function enqueueSend(jid, fn) {
+  return new Promise((resolve, reject) => {
+    const bucket = getQueue(jid);
+    bucket.q.push({ fn, resolve, reject });
+    if (!bucket.busy) processQueue(jid).catch(() => { });
+  });
+}
+
+async function processQueue(jid) {
+  const bucket = getQueue(jid);
+  if (bucket.busy) return;
+  bucket.busy = true;
+
+  while (bucket.q.length) {
+    const job = bucket.q.shift();
+    try {
+      const res = await job.fn();
+      job.resolve(res);
+    } catch (e) {
+      job.reject(e);
+    }
+    // hər mesajdan sonra 5s gözlə (növbə boşalsa da)
+    await sleep(SEND_GAP_MS);
+  }
+
+  bucket.busy = false;
+}
+
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
@@ -333,18 +376,19 @@ app.post('/webhook', async (req, res) => {
         const targets = getDestGroupsFor(env.remoteJid);
         if (targets.length) {
           for (const jid of targets) {
-            await sendLocation({
+            await enqueueSend(jid, () => sendLocation({
               to: jid,
               latitude: loc.lat,
               longitude: loc.lng,
-              name: loc.name || (newChat.message?.trim() || 'Location'),
+              name: loc.name || (newChat.message?.trim() || 'Konum'),
               address: loc.address || undefined,
-            });
-            // ardınca kontakt info ayrıca text kimi
-            await sendText({
+            }));
+
+            await enqueueSend(jid, () => sendText({
               to: jid,
               text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
-            });
+            }));
+
           }
         }
       } catch (e) {
@@ -432,11 +476,11 @@ app.post('/webhook', async (req, res) => {
             }
 
             // ✅ replyTo varsa REAL reply bubble olacaq
-            const resp = await sendText({
+            const resp = await enqueueSend(jid, () => sendText({
               to: jid,
               text: bridged,
               replyTo,
-            });
+            }));
 
             // ✅ yalnız ORİJİNAL (reply olmayan) mesajlarda mapping saxla
             if (!isReply) {
