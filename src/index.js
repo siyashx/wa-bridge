@@ -34,13 +34,14 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .filter(Boolean);
 
 /* ---------------- WA send queue (5s) ---------------- */
-const SEND_GAP_MS = Number(process.env.SEND_GAP_MS || 5000);
+const BURST_WINDOW_MS = Number(process.env.BURST_WINDOW_MS || 5000);
 
-// hər dest üçün ayrı növbə (ən stabil variant)
-const sendQueues = new Map(); // jid -> { busy:boolean, q: Array<{fn, resolve, reject}> }
+const sendQueues = new Map();
 
 function getQueue(jid) {
-  if (!sendQueues.has(jid)) sendQueues.set(jid, { busy: false, q: [] });
+  if (!sendQueues.has(jid)) {
+    sendQueues.set(jid, { busy: false, q: [], lastSentMs: 0 });
+  }
   return sendQueues.get(jid);
 }
 
@@ -63,14 +64,23 @@ async function processQueue(jid) {
 
   while (bucket.q.length) {
     const job = bucket.q.shift();
+
+    // ✅ yalnız ardıcıl gələndə gözlə:
+    // son göndərişdən bəri 5s keçməyibsə -> gözlə, keçibsə -> dərhal göndər
+    const now = Date.now();
+    const elapsed = now - (bucket.lastSentMs || 0);
+    if (bucket.lastSentMs && elapsed < BURST_WINDOW_MS) {
+      await sleep(BURST_WINDOW_MS - elapsed);
+    }
+
     try {
       const res = await job.fn();
       job.resolve(res);
     } catch (e) {
       job.reject(e);
+    } finally {
+      bucket.lastSentMs = Date.now(); // göndərişdən sonra yenilə
     }
-    // hər mesajdan sonra 5s gözlə (növbə boşalsa da)
-    await sleep(SEND_GAP_MS);
   }
 
   bucket.busy = false;
@@ -247,8 +257,6 @@ function isTooOld(env, maxAgeMs) {
   return (Date.now() - ts) > maxAgeMs;
 }
 
-
-
 // Asia/Baku üçün "YYYY-MM-DD HH:mm:ss"
 function formatBakuTimestamp(date = new Date()) {
   // sv-SE locale "YYYY-MM-DD HH:mm:ss" verir; timezone-u Asia/Baku edirik
@@ -339,7 +347,7 @@ app.post('/webhook', async (req, res) => {
 
     // Dedup (freshness-dən sonra daha məntiqlidir)
     if (seenRecently(env.id)) return;
-    
+
     // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
     // sonra participant @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
