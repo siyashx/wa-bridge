@@ -78,7 +78,7 @@ async function processQueue(jid) {
 
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
-const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+const DEDUP_WINDOW_MS = Number(process.env.DEDUP_WINDOW_MS || 5 * 60 * 1000);
 
 function seenRecently(id) {
   if (!id) return false;
@@ -87,7 +87,7 @@ function seenRecently(id) {
   if (ts && now - ts < DEDUP_WINDOW_MS) return true;
   processedIds.set(id, now);
 
-  if (processedIds.size > 5000) {
+  if (processedIds.size > 50000) {
     const cutoff = now - DEDUP_WINDOW_MS;
     for (const [mid, t] of processedIds) {
       if (t < cutoff) processedIds.delete(mid);
@@ -222,6 +222,33 @@ function normalizeEnvelope(data) {
   return out;
 }
 
+// Webhook payload-dan mesaj vaxtını çıxar (ms)
+function getMsgTsMs(env) {
+  const raw =
+    env?.raw?.messageTimestampMs ??
+    env?.raw?.messageTimestamp ??
+    env?.raw?.timestamp ??
+    env?.msg?.messageTimestamp ??
+    env?.msg?.timestamp ??
+    null;
+
+  if (raw == null) return null;
+
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+
+  // saniyə / millisecond normalize
+  return n > 1e12 ? n : n * 1000;
+}
+
+function isTooOld(env, maxAgeMs) {
+  const ts = getMsgTsMs(env);
+  if (!ts) return false; // timestamp yoxdursa bloklama
+  return (Date.now() - ts) > maxAgeMs;
+}
+
+
+
 // Asia/Baku üçün "YYYY-MM-DD HH:mm:ss"
 function formatBakuTimestamp(date = new Date()) {
   // sv-SE locale "YYYY-MM-DD HH:mm:ss" verir; timezone-u Asia/Baku edirik
@@ -296,19 +323,23 @@ app.post('/webhook', async (req, res) => {
     const env = normalizeEnvelope(data);
 
     // Özümüzdən çıxanları at
-    if (env.fromMe) {
-      return;
-    }
+    if (env.fromMe) return;
 
-    if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) {
-      return;
-    }
+    if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) return;
 
-    // Dedup
-    if (seenRecently(env.id)) {
-      return;
-    }
+    // ✅ əvvəl freshness (text + location üçün)
+    const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
+    // reply mesajları istisna (text üçün lazımdır)
+    const quoted = extractQuoted(env.msg);
+    const isReply = !!quoted;
+
+    // Köhnədirsə və reply deyilsə, ignore et (location da bura düşür)
+    if (!isReply && isTooOld(env, MAX_AGE_MS)) return;
+
+    // Dedup (freshness-dən sonra daha məntiqlidir)
+    if (seenRecently(env.id)) return;
+    
     // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
     // sonra participant @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
@@ -399,14 +430,6 @@ app.post('/webhook', async (req, res) => {
 
     const textBody = extractText(env.msg);
     if (!textBody) return;
-
-    const quoted = extractQuoted(env.msg);      // ✅ reply info
-    const isReply = !!quoted;
-
-    // ✅ reply-dirsə filter işləməsin
-    if (!isReply && shouldBlockMessage(textBody)) {
-      return;
-    }
 
     const timestamp = formatBakuTimestamp();
 
