@@ -13,7 +13,7 @@ const {
   PORT = 4242,
   WEBHOOK_SECRET,
   GROUP_A_JID,
-  DEBUG = '1',
+  GROUP_B_JID,
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   MULTI_EVENT = '0',
   WS_URL = 'wss://mototaksi.az:9898/ws',
@@ -23,7 +23,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID].filter(Boolean)
+  [GROUP_A_JID, GROUP_B_JID].filter(Boolean)
 );
 
 // ✅ Hədəf (forward) qrupların siyahısı
@@ -31,6 +31,10 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+
+// xüsusi abonə mesajı olan qrup
+const SUB_ONLY_DEST_JID = '120363424109826549@g.us';
+const SUB_ONLY_TAIL = 'Sifarişi qəbul etmək üçün aylıq abunə haqqı ödəməlisiniz ✅ 5 AZN';
 
 /* ---------------- WA send queue (5s) ---------------- */
 const BURST_WINDOW_MS = Number(process.env.BURST_WINDOW_MS || 5000);
@@ -185,7 +189,17 @@ function parseDigitsFromLid(jid) {
 }
 
 function getDestGroupsFor(sourceJid) {
-  // Mənbə hansı qrupdursa, ona geri göndərməyək
+  // 1) B qrupundan gəlirsə: B-yə geri göndərmə, yalnız digər dest-lərə göndər
+  if (sourceJid === GROUP_B_JID) {
+    return DEST_GROUPS.filter(jid => jid !== GROUP_B_JID);
+  }
+
+  // 2) A qrupundan gəlirsə: hər iki dest-ə göndər (listdə nə varsa)
+  if (sourceJid === GROUP_A_JID) {
+    return DEST_GROUPS.slice();
+  }
+
+  // fallback
   return DEST_GROUPS.filter(jid => jid !== sourceJid);
 }
 
@@ -423,7 +437,9 @@ app.post('/webhook', async (req, res) => {
 
             await enqueueSend(jid, () => sendText({
               to: jid,
-              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
+              text: (jid === SUB_ONLY_DEST_JID)
+                ? SUB_ONLY_TAIL
+                : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
             }));
 
           }
@@ -486,41 +502,41 @@ app.post('/webhook', async (req, res) => {
     try {
       const phoneForTail = normalizedPhone || '—';
 
-      let bridged = cleanMessage; // reply bubble özü kifayətdir
+      let bridgedBase = cleanMessage; // əsas mesaj
 
-      // ✅ reply deyilsə əlaqə əlavə et, reply-dirsə etmə
-      if (!isReply) {
-        bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-      }
+      const targets = getDestGroupsFor(env.remoteJid);
+      if (targets.length) {
+        for (const jid of targets) {
+          let replyTo = undefined;
 
-      try {
-        const targets = getDestGroupsFor(env.remoteJid);
-        if (targets.length) {
-          for (const jid of targets) {
-            let replyTo = undefined;
+          if (isReply && quoted?.stanzaId) {
+            replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
+          }
 
-            // ✅ əgər incoming mesaj reply-dirsə, A qrupundakı stanzaId -> dest qrup üçün msgId tap
-            if (isReply && quoted?.stanzaId) {
-              replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
-            }
+          // ✅ dest-ə görə tail
+          let bridged = bridgedBase;
 
-            // ✅ replyTo varsa REAL reply bubble olacaq
-            const resp = await enqueueSend(jid, () => sendText({
-              to: jid,
-              text: bridged,
-              replyTo,
-            }));
-
-            // ✅ yalnız ORİJİNAL (reply olmayan) mesajlarda mapping saxla
-            if (!isReply) {
-              const msgId = resp?.data?.msgId;
-              forwardMapPut(env.remoteJid, env.id, jid, msgId);
+          if (!isReply) {
+            if (jid === SUB_ONLY_DEST_JID) {
+              // ✅ burada nömrə GÖRÜNMƏSİN, yalnız abonə yazısı olsun
+              bridged = `${bridged}\n\n${SUB_ONLY_TAIL}`;
+            } else {
+              // digər dest-lərdə köhnə qayda (nömrə)
+              bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
             }
           }
 
+          const resp = await enqueueSend(jid, () => sendText({
+            to: jid,
+            text: bridged,
+            replyTo,
+          }));
+
+          if (!isReply) {
+            const msgId = resp?.data?.msgId;
+            forwardMapPut(env.remoteJid, env.id, jid, msgId);
+          }
         }
-      } catch (e) {
-        console.error('Forward (text) error:', e?.response?.data || e.message);
       }
 
     } catch (e) {
