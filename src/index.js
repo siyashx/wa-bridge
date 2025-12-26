@@ -36,8 +36,14 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
 const SUB_ONLY_DEST_JID = '120363424109826549@g.us';
 const SUB_ONLY_TAIL = 'Sifarişi qəbul etmək üçün aylıq abunə haqqı ödəməlisiniz ✅ 5 AZN';
 
-/* ---------------- WA send queue (5s) ---------------- */
+/* ---------------- WA send queue (reliable) ---------------- */
 const BURST_WINDOW_MS = Number(process.env.BURST_WINDOW_MS || 5000);
+
+// retry parametrləri
+const SEND_RETRY_MAX = Number(process.env.SEND_RETRY_MAX || 8);
+const SEND_RETRY_BASE_MS = Number(process.env.SEND_RETRY_BASE_MS || 1200);
+const SEND_RETRY_MAX_MS = Number(process.env.SEND_RETRY_MAX_MS || 20000);
+const MAX_QUEUE_PER_JID = Number(process.env.MAX_QUEUE_PER_JID || 300);
 
 const sendQueues = new Map();
 
@@ -52,10 +58,29 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function expBackoff(attempt) {
+  const ms = Math.min(SEND_RETRY_MAX_MS, SEND_RETRY_BASE_MS * Math.pow(2, attempt));
+  return ms + Math.floor(Math.random() * 250); // jitter
+}
+
+function isRetryableError(e) {
+  const status = e?.response?.status;
+  if (!status) return true;              // network/timeout
+  if (status === 429 || status === 408) return true;
+  if (status >= 500 && status <= 599) return true;
+  return false;
+}
+
 function enqueueSend(jid, fn) {
   return new Promise((resolve, reject) => {
     const bucket = getQueue(jid);
-    bucket.q.push({ fn, resolve, reject });
+
+    if (bucket.q.length >= MAX_QUEUE_PER_JID) {
+      return reject(new Error(`Queue overflow for ${jid} (len=${bucket.q.length})`));
+    }
+
+    bucket.q.push({ fn, resolve, reject, attempt: 0 });
+
     if (!bucket.busy) processQueue(jid).catch(() => { });
   });
 }
@@ -66,10 +91,9 @@ async function processQueue(jid) {
   bucket.busy = true;
 
   while (bucket.q.length) {
-    const job = bucket.q.shift();
+    const job = bucket.q[0]; // ✅ SHIFT YOX: yalnız success olanda çıxacaq
 
-    // ✅ yalnız ardıcıl gələndə gözlə:
-    // son göndərişdən bəri 5s keçməyibsə -> gözlə, keçibsə -> dərhal göndər
+    // ✅ ilk mesaj dərhal: lastSentMs=0 -> gözləmir
     const now = Date.now();
     const elapsed = now - (bucket.lastSentMs || 0);
     if (bucket.lastSentMs && elapsed < BURST_WINDOW_MS) {
@@ -78,16 +102,34 @@ async function processQueue(jid) {
 
     try {
       const res = await job.fn();
+
+      // ✅ yalnız UĞURLU göndərişdən sonra
+      bucket.lastSentMs = Date.now();
+      bucket.q.shift();
       job.resolve(res);
+
     } catch (e) {
-      job.reject(e);
-    } finally {
-      bucket.lastSentMs = Date.now(); // göndərişdən sonra yenilə
+      const retryable = isRetryableError(e);
+
+      if (!retryable || job.attempt >= SEND_RETRY_MAX) {
+        // retry yoxdur -> drop + reject
+        bucket.q.shift();
+        job.reject(e);
+      } else {
+        job.attempt += 1;
+        const waitMs = expBackoff(job.attempt);
+        console.error(
+          `send retry: jid=${jid} attempt=${job.attempt} wait=${waitMs}ms status=${e?.response?.status || 'na'} msg=${e?.message}`
+        );
+        await sleep(waitMs);
+        // job queue-da qalır, loop yenə cəhd edəcək
+      }
     }
   }
 
   bucket.busy = false;
 }
+
 
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
