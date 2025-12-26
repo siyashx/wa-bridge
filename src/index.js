@@ -121,7 +121,7 @@ async function processQueue(jid) {
         console.error(
           `send retry: jid=${jid} attempt=${job.attempt} wait=${waitMs}ms status=${e?.response?.status || 'na'} msg=${e?.message}`
         );
-        await sleep(waitMs);
+        await sleep(Math.max(waitMs, BURST_WINDOW_MS));
         // job queue-da qalır, loop yenə cəhd edəcək
       }
     }
@@ -129,7 +129,6 @@ async function processQueue(jid) {
 
   bucket.busy = false;
 }
-
 
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
@@ -469,7 +468,7 @@ app.post('/webhook', async (req, res) => {
         const targets = getDestGroupsFor(env.remoteJid);
         if (targets.length) {
           for (const jid of targets) {
-            await enqueueSend(jid, () => sendLocation({
+            const respLoc = await enqueueSend(jid, () => sendLocation({
               to: jid,
               latitude: loc.lat,
               longitude: loc.lng,
@@ -477,14 +476,20 @@ app.post('/webhook', async (req, res) => {
               address: loc.address || undefined,
             }));
 
+            const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
+            if (msgIdLoc) {
+              forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
+            }
+
+            // ✅ sonra tail mesajını da göndər
             await enqueueSend(jid, () => sendText({
               to: jid,
               text: (jid === SUB_ONLY_DEST_JID)
                 ? SUB_ONLY_TAIL
                 : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
             }));
-
           }
+
         }
       } catch (e) {
         console.error('Forward (location) error:', e?.response?.data || e.message);
@@ -575,7 +580,7 @@ app.post('/webhook', async (req, res) => {
           }));
 
           if (!isReply) {
-            const msgId = resp?.data?.msgId;
+            const msgId = resp?.msgId || resp?.data?.msgId;
             forwardMapPut(env.remoteJid, env.id, jid, msgId);
           }
         }
