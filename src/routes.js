@@ -8,7 +8,7 @@ app.use(express.json({ limit: '2mb' }));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Webhook
-app.post('/webhook', async (req, res) => {
+app.post(['/webhook', '/webhook/*'], async (req, res) => {
   try {
     // 1) API KEY yoxla (Evolution)
     const apikey = req.headers['apikey'];

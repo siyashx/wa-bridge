@@ -13,9 +13,7 @@ const {
   PORT = 4242,
   EVOLUTION_API_KEY,
   GROUP_A_JID,
-  GROUP_B_JID,
   TARGET_API_BASE = 'https://mototaksi.az:9898',
-  MULTI_EVENT = '0',
   WS_URL = 'wss://mototaksi.az:9898/ws',
   ONE_SIGNAL_APP_ID,
   ONE_SIGNAL_REST_API_KEY,
@@ -23,7 +21,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_B_JID].filter(Boolean)
+  [GROUP_A_JID].filter(Boolean)
 );
 
 // ✅ Hədəf (forward) qrupların siyahısı
@@ -355,7 +353,7 @@ function getStaticLocation(msg) {
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-app.post('/webhook', async (req, res) => {
+app.post(['/webhook', '/webhook/*'], async (req, res) => {
   // Wasender sürətli 200 istəyir
   res.status(200).json({ received: true });
 
