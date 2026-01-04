@@ -1,5 +1,5 @@
 {
-  "name": "wa-bridge",
+  "name": "evolution-wa-bridge",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -14,3 +14,4 @@
     "ws": "^8.18.3"
   }
 }
+
