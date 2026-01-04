@@ -10,50 +10,52 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // Webhook
 app.post('/webhook', async (req, res) => {
   try {
-    // 1) Signature yoxlaması
-    const sig = req.headers['x-webhook-signature'];
-    if (!sig || sig !== process.env.WEBHOOK_SECRET) {
-      return res.status(401).json({ error: 'Invalid signature' });
+    // 1) API KEY yoxla (Evolution)
+    const apikey = req.headers['apikey'];
+    if (!apikey || apikey !== process.env.EVOLUTION_API_KEY) {
+      return res.status(401).json({ error: 'Invalid apikey' });
     }
 
-    // 2) Tez cavab ver (Wasender sürətli 200 istəyir)
+    // 2) Tez 200 qaytar
     res.status(200).json({ received: true });
 
-    // 3) Event-i emal et
     const { event, data } = req.body || {};
+    if (event !== 'MESSAGES_UPSERT') return;
 
-    // A qrupundan gələn qrup mesajlarını tuturuq
-    if (event === 'messages-group.received' && data?.key?.remoteJid === process.env.GROUP_A_JID) {
-      const groupJid = data.key.remoteJid;                // A qrupu
-      const senderJid = data.key.participant || '';       // 5511999...@s.whatsapp.net
-      const msg = data.message || {};
+    const messages = data?.messages || [];
+    for (const m of messages) {
+      if (m.key?.fromMe) continue;
 
-      // Mətni çıxar (sadə nümunə: conversation və ya extendedTextMessage)
-      let text = msg.conversation
-        || msg?.extendedTextMessage?.text
-        || msg?.imageMessage?.caption
-        || msg?.videoMessage?.caption
-        || '';
+      const remoteJid = m.key?.remoteJid;
+      const senderJid = m.key?.participant || '';
 
-      if (!text) return;
+      // yalnız A qrupu
+      if (remoteJid !== process.env.GROUP_A_JID) continue;
 
-      // Göndərənin nömrəsini sonda əlavə et
+      const msg = m.message || {};
+
+      const text =
+        msg.conversation ||
+        msg?.extendedTextMessage?.text ||
+        msg?.imageMessage?.caption ||
+        msg?.videoMessage?.caption ||
+        '';
+
+      if (!text) continue;
+
       const phone = senderJid.replace('@s.whatsapp.net', '');
       const bridged = `${text}\n\n— ${phone}`;
 
-      // B qrupuna göndər
-      await sendText({ to: process.env.GROUP_B_JID, text: bridged });
-      return;
+      // B qrupuna ötür
+      await sendText({
+        to: process.env.GROUP_B_JID,
+        text: bridged,
+      });
     }
-
-    // Şəxsi mesajlar (istəsən aktiv et)
-    // if (event === 'messages-personal.received') { ... }
-
   } catch (e) {
-    // burda sırf log
-    console.error('Webhook handler error:', e?.response?.data || e.message);
-    // cavab artıq göndərilib
+    console.error('Webhook error:', e?.response?.data || e.message);
   }
 });
 
 export default app;
+

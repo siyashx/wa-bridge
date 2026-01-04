@@ -1,79 +1,80 @@
-import axios from 'axios';
+import axios from "axios";
 
-const WAS_BASE = process.env.WASENDER_API_BASE || 'https://www.wasenderapi.com';
-const API_KEY = process.env.WASENDER_API_KEY;
+const EVO_BASE = process.env.EVOLUTION_API_BASE || "http://127.0.0.1:8080";
+const EVO_KEY = process.env.EVOLUTION_API_KEY;              // SALAM721721
+const INSTANCE = process.env.EVOLUTION_INSTANCE || "default";
 
-export async function sendText({ to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions, replyTo }) {
+// Evolution header adları bəzən "apikey" olur
+function evoHeaders() {
+  return {
+    apikey: EVO_KEY,
+    "Content-Type": "application/json",
+  };
+}
 
-  const payload = { to, text, imageUrl, videoUrl, documentUrl, audioUrl, mentions, replyTo };
-  Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]); if (process.env.DRY_RUN) {
-    return { success: true, data: { status: 'in_progress' } };
+export async function sendText({ to, text, mentions, replyTo }) {
+  if (process.env.DRY_RUN) {
+    return { success: true, msgId: "dry_run" };
   }
 
-  const res = await axios.post(`${WAS_BASE}/api/send-message`, payload, {
-    headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-    timeout: 15000
-  });
-  return res.data;
+  const payload = {
+    number: to,              // group jid də ola bilər (xxx@g.us)
+    text: text || "",
+    // bəzi versiyalarda "mentions" qəbul edir; problem olsa silərik
+    mentions,
+    // bəzi versiyalarda quoted/reply üçün "quoted" / "quotedMsgId" ola bilər
+    // səndəki forwardMap logic üçün replyTo saxlayırıq, alınmasa ignore edəcəyik
+    replyTo,
+  };
+
+  Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+
+  const res = await axios.post(
+    `${EVO_BASE}/message/sendText/${INSTANCE}`,
+    payload,
+    { headers: evoHeaders(), timeout: 15000 }
+  );
+
+  // mümkün msgId-lər:
+  const msgId =
+    res?.data?.key?.id ||
+    res?.data?.messageId ||
+    res?.data?.msgId ||
+    null;
+
+  return { ...res.data, msgId };
 }
 
 export async function sendLocation({ to, latitude, longitude, name, address }) {
   if (process.env.DRY_RUN) {
-    return { success: true, data: { status: 'in_progress' } };
+    return { success: true, msgId: "dry_run" };
   }
 
-  // 1) Sənədləşməyə uyğun: nested "location"
-  try {
-    const res = await axios.post(`${WAS_BASE}/api/send-message`, {
-      to,
-      text: name || address || 'Location',
-      location: {
-        latitude,
-        longitude,
-        name,
-        address,
-      },
-    }, {
-      headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-      timeout: 15000
-    });
-    return res.data;
-  } catch (e) {
-    // 2) Ayrı endpoint
-    try {
-      const res2 = await axios.post(`${WAS_BASE}/api/send-location`, {
-        to,
-        latitude,
-        longitude,
-        name,
-        address,
-      }, {
-        headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-        timeout: 15000
-      });
-      return res2.data;
-    } catch (e2) {
-      // 3) type: 'location'
-      try {
-        const res3 = await axios.post(`${WAS_BASE}/api/send-message`, {
-          to,
-          type: 'location',
-          latitude,
-          longitude,
-          name,
-          address,
-        }, {
-          headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-          timeout: 15000
-        });
-        return res3.data;
-      } catch (e3) {
-        // 4) Link fallback
-        const url = `https://maps.google.com/?q=${latitude},${longitude}`;
-        const fallbackText = `${name || address || 'Location'}\n${url}`;
-        return sendText({ to, text: fallbackText });
-      }
-    }
-  }
+  const payload = {
+    number: to,
+    // Evolution-də adətən bu struktur işləyir:
+    location: {
+      degreesLatitude: Number(latitude),
+      degreesLongitude: Number(longitude),
+      name: name || undefined,
+      address: address || undefined,
+    },
+  };
+
+  // bəzən caption/text də istəyir
+  if (name || address) payload.text = name || address;
+
+  const res = await axios.post(
+    `${EVO_BASE}/message/sendLocation/${INSTANCE}`,
+    payload,
+    { headers: evoHeaders(), timeout: 15000 }
+  );
+
+  const msgId =
+    res?.data?.key?.id ||
+    res?.data?.messageId ||
+    res?.data?.msgId ||
+    null;
+
+  return { ...res.data, msgId };
 }
-

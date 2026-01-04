@@ -11,7 +11,7 @@ app.use(express.json({ limit: '2mb' }));
 
 const {
   PORT = 4242,
-  WEBHOOK_SECRET,
+  EVOLUTION_API_KEY,
   GROUP_A_JID,
   GROUP_B_JID,
   TARGET_API_BASE = 'https://mototaksi.az:9898',
@@ -191,14 +191,8 @@ function forwardMapGet(sourceGroupJid, sourceMsgId, destJid) {
 
 // İmza
 function verifySignature(req) {
-  const sig =
-    req.get('x-webhook-signature') ||
-    req.get('x-signature') ||
-    req.get('x-wasender-signature') ||
-    req.get('x-was-signature');
-
-  const ok = !!sig && !!WEBHOOK_SECRET && sig === WEBHOOK_SECRET;
-  return ok;
+  const apikey = req.get('apikey'); // Evolution header
+  return !!apikey && !!EVOLUTION_API_KEY && apikey === EVOLUTION_API_KEY;
 }
 
 // Mətni çıxar
@@ -373,14 +367,8 @@ app.post('/webhook', async (req, res) => {
 
     const { event, data } = req.body || {};
 
-    const allowed =
-      String(MULTI_EVENT) === '1'
-        ? ['messages-group.received', 'messages.received', 'messages.upsert']
-        : ['messages-group.received'];
-
-    if (!allowed.includes(event)) {
-      return;
-    }
+    const allowed = new Set(['MESSAGES_UPSERT']);
+    if (!allowed.has(event)) return;
 
     const env = normalizeEnvelope(data);
 
