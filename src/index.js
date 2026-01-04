@@ -223,9 +223,9 @@ function parseDigitsFromLid(jid) {
 
 function getDestGroupsFor(sourceJid) {
   // 1) B qrupundan gəlirsə: B-yə geri göndərmə, yalnız digər dest-lərə göndər
-  if (sourceJid === GROUP_B_JID) {
+  /* if (sourceJid === GROUP_B_JID) {
     return DEST_GROUPS.filter(jid => jid !== GROUP_B_JID);
-  }
+  } */
 
   // 2) A qrupundan gəlirsə: hər iki dest-ə göndər (listdə nə varsa)
   if (sourceJid === GROUP_A_JID) {
@@ -356,6 +356,12 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.post(['/webhook', '/webhook/*'], async (req, res) => {
   // Wasender sürətli 200 istəyir
   res.status(200).json({ received: true });
+
+  console.log('WEBHOOK HIT', {
+    path: req.originalUrl,
+    hasApikey: !!req.get('apikey'),
+    event: req.body?.event,
+  });
 
   try {
 
@@ -721,7 +727,7 @@ async function isDuplicateChatMessage(messageText) {
   try {
     // son mesajları götür (sürətli olsun deyə limit kiçik saxlayırıq)
     const res = await axios.get(`${TARGET_API_BASE}/api/chats`, { timeout: 15000 });
-    const list = Array.isArray(res?.data) ? res.data : [];
+    const list = Array.isArray(data?.messages) ? data.messages : [data?.message || data].filter(Boolean);
 
     const needle = String(messageText || '').trim();
     if (!needle) return false;
