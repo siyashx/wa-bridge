@@ -570,6 +570,15 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     const quoted = extractQuotedFromEnv(env);
     const isReply = !!quoted;
 
+    if (isReply) {
+      console.log("REPLY DEBUG", {
+        sourceQuotedStanzaId: quoted?.stanzaId,
+        destReplyTo: replyTo,
+        hasQuotedObj: !!quoted?.quotedMessage,
+        quotedKeys: quoted?.quotedMessage ? Object.keys(quoted.quotedMessage) : [],
+      });
+    }
+
     if (!isReply && isTooOld(env, MAX_AGE_MS)) {
       console.log('SKIP: too old');
       return;
@@ -671,6 +680,15 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           if (msgIdLoc) {
             // ✅ reply mapping üçün saxla
             forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
+          }
+
+          if (isReply) {
+            console.log("REPLY DEBUG", {
+              sourceQuotedStanzaId: quoted?.stanzaId,
+              destReplyTo: replyTo || null,
+              quotedText: quoted?.text || null,
+              quotedParticipant: quoted?.participant || null,
+            });
           }
 
           // ✅ sonra tail
@@ -783,6 +801,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           to: jid,
           text: bridged,
           replyTo,
+          quotedParticipant: quoted?.participant || undefined,
+          quotedText: quoted?.text || undefined,
         }));
 
         // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
@@ -974,8 +994,9 @@ function extractQuotedFromEnv(env) {
   return {
     text: qt,
     participant: ctx?.participant || null,
-    stanzaId: ctx?.stanzaId || null,  // ✅ replyTo üçün ən vacib budur
-    _raw: q,
+    stanzaId: ctx?.stanzaId || null,    // quoted msg id (incoming)
+    quotedMessage: q,                   // ✅ ƏN VACİB: obyektin özü
+    _rawCtx: ctx,
   };
 }
 

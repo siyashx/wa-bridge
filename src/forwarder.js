@@ -12,7 +12,7 @@ function evoHeaders() {
   };
 }
 
-export async function sendText({ to, text, mentions, replyTo }) {
+export async function sendText({ to, text, mentions, replyTo, quotedParticipant, quotedText }) {
   if (process.env.DRY_RUN) {
     return { success: true, msgId: "dry_run" };
   }
@@ -21,13 +21,36 @@ export async function sendText({ to, text, mentions, replyTo }) {
     number: to,
     text: text || "",
     mentions,
-
-    // ✅ Evolution variantları (hansı işləsə API özü götürəcək)
-    replyTo,
-    quoted: replyTo,
-    quotedMsgId: replyTo,
-    quotedMessageId: replyTo,
   };
+
+  // ✅ Reply varsa: Evolution-un bəzi build-ləri quoted KEY+MESSAGE istəyir
+  if (replyTo) {
+    // id-based field-lər
+    payload.replyTo = replyTo;
+    payload.quotedMsgId = replyTo;
+    payload.quotedMessageId = replyTo;
+
+    // ✅ ən vacib: quoted obyekti BAILEYS formatına yaxın veririk ki 400 olmasın
+    payload.quoted = {
+      key: {
+        remoteJid: to,
+        fromMe: false,
+        id: replyTo,
+        participant: quotedParticipant || undefined,
+      },
+      message: {
+        conversation: quotedText || "", // boş olsa da olar
+      },
+    };
+
+    // optional: bəzən contextInfo da kömək edir (amma quoted key artıq kifayət edir)
+    payload.contextInfo = {
+      stanzaId: replyTo,
+      participant: quotedParticipant || undefined,
+    };
+    Object.keys(payload.contextInfo).forEach(k => payload.contextInfo[k] === undefined && delete payload.contextInfo[k]);
+    if (!Object.keys(payload.contextInfo).length) delete payload.contextInfo;
+  }
 
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
 
@@ -45,6 +68,7 @@ export async function sendText({ to, text, mentions, replyTo }) {
 
   return { ...res.data, msgId };
 }
+
 
 
 export async function sendLocation({ to, latitude, longitude, name, address }) {
