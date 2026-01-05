@@ -61,8 +61,7 @@ function cleanPayload(p) {
   return p;
 }
 
-export async function sendText({ to, text, mentions, replyTo, quotedParticipant, quotedText }) {
-  if (process.env.DRY_RUN) {
+export async function sendText({ to, text, mentions, replyTo, quotedText, quotedMessage }) {  if (process.env.DRY_RUN) {
     return { success: true, msgId: "dry_run" };
   }
 
@@ -72,8 +71,8 @@ export async function sendText({ to, text, mentions, replyTo, quotedParticipant,
     mentions,
   };
 
-  if (replyTo) {
-    const { v1 } = buildReplyPayload({ chatJid: to, replyTo, quotedText });
+ if (replyTo) {
+    const { v1 } = buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage });
     Object.assign(payload, v1);
   }
 

@@ -592,9 +592,10 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
     // əvvəldə:
-    const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
+    const selfLoc = getStaticLocation(env.msg);          // yalnız mesajın özündə location varsa
+    const quotedLoc = getQuotedLocationFromEnv(env);     // yalnız reply üçün lazım ola bilər (forward reply context)
 
-    if (loc) {
+    if (selfLoc) {
       const timestamp = formatBakuTimestamp();
 
       const normalizedPhone =
@@ -808,7 +809,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         if (isReply && quoted?.stanzaId) {
           const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
           replyTo = rec?.msgId || undefined;
-          destQuotedMessage = rec?.quotedMessage || null; // (text üçün optional)
+          destQuotedMessage = rec?.quotedMessage || null;; // (text üçün optional)
         }
 
         if (isReply) {
@@ -834,9 +835,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         const resp = await enqueueSend(jid, () => sendText({
           to: jid,
           text: bridged,
-          replyTo, // ✅ string
+          replyTo,
           quotedText: quoted?.text || undefined,
-          // istəyirsən sendText-ə də quotedMessage əlavə edərik (amma lazım deyil)
+          quotedMessage: destQuotedMessage || undefined, // ✅ əsas
         }));
 
         // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
@@ -1022,6 +1023,7 @@ function extractQuotedFromEnv(env) {
     q.videoMessage?.caption ||
     q.documentMessage?.caption ||
     q.documentMessage?.fileName ||
+    (q.locationMessage ? `[location] ${q.locationMessage.name || ''}`.trim() : null) ||
     (q.audioMessage?.ptt ? '[voice]' : null) ||
     null;
 
