@@ -185,6 +185,35 @@ function forwardMapGet(sourceGroupJid, sourceMsgId, destJid) {
 
 /* ---------------- helpers ---------------- */
 
+function pickHeaders(req) {
+  // yalnız lazım olanlar
+  const h = req.headers || {};
+  return {
+    apikey: h['apikey'],
+    authorization: h['authorization'],
+    'x-api-key': h['x-api-key'],
+    'user-agent': h['user-agent'],
+    'content-type': h['content-type'],
+    host: h['host'],
+  };
+}
+
+function normEvent(ev) {
+  const s = String(ev || '').trim();
+  if (!s) return '';
+  // messages.upsert / messages-upsert / MESSAGES_UPSERT -> messages_upsert
+  return s.toLowerCase().replace(/[\s.\-]+/g, '_');
+}
+
+function shortJson(x, limit = 1200) {
+  try {
+    const s = JSON.stringify(x);
+    return s.length > limit ? s.slice(0, limit) + '…' : s;
+  } catch {
+    return String(x);
+  }
+}
+
 // İmza
 function verifySignature(req) {
   const apikey = req.get('apikey'); // Evolution header
@@ -355,24 +384,62 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
   // Wasender sürətli 200 istəyir
   res.status(200).json({ received: true });
 
+  const evRaw = req.body?.event;
+  const evN = normEvent(evRaw);
+
   console.log('WEBHOOK HIT', {
     path: req.originalUrl,
+    eventRaw: evRaw,
+    eventNorm: evN,
     hasApikey: !!req.get('apikey'),
-    event: req.body?.event,
+    headers: pickHeaders(req),
   });
+
+  // body-dən bir az nümunə (key, remoteJid, fromMe, id) çıxart
+  try {
+    const d = req.body?.data;
+    const env0 = d?.messages?.[0] || d?.message || d || {};
+    const k = env0?.key || {};
+    console.log('WEBHOOK SNAP', {
+      id: k?.id || env0?.id,
+      remoteJid: k?.remoteJid || env0?.remoteJid,
+      participant: k?.participant || env0?.participant,
+      fromMe: k?.fromMe || env0?.fromMe,
+    });
+  } catch (e) {
+    console.log('WEBHOOK SNAP error', e?.message);
+  }
 
   try {
 
     const { event, data } = req.body || {};
 
-    const allowed = new Set(['MESSAGES_UPSERT']);
-    if (!allowed.has(event)) return;
+    const allowed = new Set(['messages_upsert']); // normalized
+    const ev = normEvent(event);
+    if (!allowed.has(ev)) {
+      console.log('SKIP: event not allowed', { event, ev });
+      return;
+    }
+
+    const REQUIRE_WEBHOOK_APIKEY = process.env.REQUIRE_WEBHOOK_APIKEY === '1';
+
+if (REQUIRE_WEBHOOK_APIKEY) {
+  if (!verifySignature(req)) {
+    console.log('SKIP: invalid apikey', { got: req.get('apikey') });
+    return;
+  }
+} else {
+  if (!req.get('apikey')) {
+    console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
+  }
+}
+
 
     const env = normalizeEnvelope(data);
 
     // Özümüzdən çıxanları at
     if (env.fromMe) return;
-
+    
     if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) return;
 
     // ✅ əvvəl freshness (text + location üçün)
