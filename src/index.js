@@ -696,7 +696,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
               latitude: effectiveLoc.lat,
               longitude: effectiveLoc.lng,
               name: effectiveLoc.name || effectiveLoc.caption || '',
-              address: effectiveLoc.address || undefined,
+              address: effectiveLoc.address || '',
               replyTo,
               quotedMessage: destQuotedMessage || undefined,
               quotedText: quoted?.text || undefined,
@@ -711,8 +711,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
                 locationMessage: {
                   degreesLatitude: effectiveLoc.lat,
                   degreesLongitude: effectiveLoc.lng,
-                  name: effectiveLoc.name || undefined,
-                  address: effectiveLoc.address || undefined,
+                  name: effectiveLoc.name || '',
+                  address: effectiveLoc.address || '',
                   jpegThumbnail: effectiveLoc._raw?.jpegThumbnail || undefined,
                 },
               };
@@ -756,7 +756,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     const cleanMessage = String(textBody);
 
     // ✅ shouldBlockMessage filtri
-    if (shouldBlockMessage(cleanMessage)) {
+    if (shouldBlockMessage(cleanMessage, isReply)) {
       console.log('SKIP: blocked by shouldBlockMessage');
       return;
     }
@@ -985,7 +985,7 @@ function shouldBlockMessage(raw) {
   if (exactBlockSet.has(lower)) return true;
 
   // 2) Yalnız + işarələrindən ibarət mesajlar → blokla
-  if (/^\s*\++\s*$/.test(text)) return true;
+  if (!isReply && /^\s*\++\s*$/.test(text)) return true;
 
   // 3) Ləğv / Legv / stop → blokla
   const cancelRe = /\b(l[əe]ğ?v|legv|stop)\b/i;
