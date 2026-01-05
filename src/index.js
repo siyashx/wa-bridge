@@ -216,7 +216,7 @@ function shortJson(x, limit = 1200) {
 
 // İmza
 function verifySignature(req) {
-  const apikey = req.get('apikey'); // Evolution header
+  const apikey = req.get('apikey') || req.body?.apikey;
   return !!apikey && !!EVOLUTION_API_KEY && apikey === EVOLUTION_API_KEY;
 }
 
@@ -473,31 +473,19 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
   console.log('UPSERT BODY (short)=', shortJson(req.body, 4000));
 
   try {
-    // ✅ burada “data” formatları fərqli ola bilər – hamısını tuturuq
-    const data = req.body?.data;
 
-    // Possible candidates:
-    // A) data.messages = [ { key, message } ... ]
-    // B) data = [ { key, message } ... ]  (bəzi versiyalar)
-    // C) data.message = { key, message }
-    // D) data = { key, message }
-    // E) req.body özü (fallback)
-    const candidates = [
-      ...(Array.isArray(data?.messages) ? data.messages : []),
-      ...(Array.isArray(data) ? data : []),
-      ...(data?.message ? [data.message] : []),
-      ...(data?.key || data?.message ? [data] : []),
-      ...(req.body?.key || req.body?.message ? [req.body] : []),
-    ].filter(Boolean);
+    const env = normalizeEnvelope(req.body?.data || req.body);
 
-    if (!candidates.length) {
-      console.log('SKIP: no message candidates found');
-      return;
-    }
+    if (!env?.remoteJid) {
+  console.log('SKIP: no remoteJid in env');
+  return;
+}
 
-    // İlk real message obyektini götür
-    const first = candidates[0];
-    const env = normalizeEnvelope(first);
+const gotKey = req.get('apikey') || req.body?.apikey;
+if (!REQUIRE_WEBHOOK_APIKEY && !gotKey) {
+  console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
+}
+
 
     console.log('WEBHOOK SNAP', {
       id: env.id,
@@ -598,7 +586,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
 });
-
 
 function isValidUUID(s) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
