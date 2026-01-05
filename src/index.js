@@ -22,7 +22,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_A_JID].filter(Boolean)
+  [GROUP_A_JID, GROUP_B_JID].filter(Boolean)
 );
 
 // ✅ Hədəf (forward) qrupların siyahısı
@@ -559,13 +559,17 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       return;
     }
 
-    // remoteJid yoxdursa stop (səndə artıq bu problemi görmüşdük)
+    // ✅ env çıxarılandan dərhal sonra:
+    const quoted = extractQuotedFromEnv(env);
+    const isReply = !!quoted;
+
+    // ✅ RemoteJid yoxdursa stop
     if (!env?.remoteJid) {
       console.log('SKIP: no remoteJid in env');
       return;
     }
 
-    // yalnız allowed qrup
+    // ✅ yalnız allowed qrup (istəsən reply üçün bunu da ləğv edə bilərik)
     if (!ALLOWED_GROUPS.has(env.remoteJid)) {
       console.log('SKIP: not allowed group', { remoteJid: env.remoteJid, allow: [...ALLOWED_GROUPS] });
       return;
@@ -574,17 +578,14 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     // ✅ əvvəl freshness (text + location üçün)
     const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
-    // reply mesajları istisna
-    const quoted = extractQuotedFromEnv(env);
-    const isReply = !!quoted;
-
     if (!isReply && isTooOld(env, MAX_AGE_MS)) {
       console.log('SKIP: too old');
       return;
     }
 
     // Dedup (ID based)
-    if (seenRecently(env.id)) {
+    // Dedup (yalnız reply DEYİLSƏ)
+    if (!isReply && seenRecently(env.id)) {
       console.log('SKIP: dedup (id)');
       return;
     }
