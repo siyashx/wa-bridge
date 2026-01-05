@@ -61,7 +61,8 @@ function cleanPayload(p) {
   return p;
 }
 
-export async function sendText({ to, text, mentions, replyTo, quotedText, quotedMessage }) {  if (process.env.DRY_RUN) {
+export async function sendText({ to, text, mentions, replyTo, quotedText, quotedMessage }) {
+  if (process.env.DRY_RUN) {
     return { success: true, msgId: "dry_run" };
   }
 
@@ -71,7 +72,7 @@ export async function sendText({ to, text, mentions, replyTo, quotedText, quoted
     mentions,
   };
 
- if (replyTo) {
+  if (replyTo) {
     const { v1 } = buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage });
     Object.assign(payload, v1);
   }
@@ -135,6 +136,13 @@ export async function sendLocation({ to, latitude, longitude, name, address, rep
         payload,
         { headers: evoHeaders(), timeout: 15000 }
       );
+
+      console.error("sendLocation schema failed", {
+        i,
+        status,
+        payload,                // ✅ bunu əlavə et
+        data: e?.response?.data
+      });
 
       const msgId = res?.data?.key?.id || res?.data?.messageId || res?.data?.msgId || null;
       return { ...res.data, msgId };

@@ -591,9 +591,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-    // əvvəldə:
-    const selfLoc = getStaticLocation(env.msg);          // yalnız mesajın özündə location varsa
-    const quotedLoc = getQuotedLocationFromEnv(env);     // yalnız reply üçün lazım ola bilər (forward reply context)
+    // ✅ yalnız mesajın özündə location varsa
+    const selfLoc = getStaticLocation(env.msg);
 
     if (selfLoc) {
       const timestamp = formatBakuTimestamp();
@@ -607,8 +606,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
 
       const locationTitle =
-        (loc.caption && loc.caption.trim()) ? loc.caption :
-          (loc.name && loc.name.trim()) ? loc.name :
+        (selfLoc.caption && selfLoc.caption.trim()) ? selfLoc.caption :
+          (selfLoc.name && selfLoc.name.trim()) ? selfLoc.name :
             '';
 
       // ✅ BACKEND/STOMP üçün newChat (location)
@@ -625,9 +624,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         message: locationTitle,
         timestamp,
         isCompleted: false,
-        locationLat: loc.lat,
-        locationLng: loc.lng,
-        thumbnail: loc._raw?.jpegThumbnail || null
+        locationLat: selfLoc.lat,
+        locationLng: selfLoc.lng,
+        thumbnail: selfLoc._raw?.jpegThumbnail || null
       };
 
       // ✅ STOMP publish
@@ -672,37 +671,35 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
           const respLoc = await enqueueSend(jid, () => sendLocation({
             to: jid,
-            latitude: loc.lat,
-            longitude: loc.lng,
-            name: loc.name || (newChat.message?.trim() || 'Konum'),
-            address: loc.address || undefined,
+            latitude: selfLoc.lat,
+            longitude: selfLoc.lng,
+            name: selfLoc.name || (newChat.message?.trim() || 'Konum'),
+            address: selfLoc.address || undefined,
 
             replyTo,
-            // ✅ ƏN VACİB: location reply üçün message tipi
             quotedMessage: destQuotedMessage || undefined,
-
-            // fallback (problem olmasa da)
             quotedText: quoted?.text || undefined,
           }));
+
+          
 
           console.log("SEND LOC DEBUG", {
             to: jid,
             isReply,
             replyTo,
             hasQuotedMessage: !!destQuotedMessage,
-            title: (loc.name || newChat.message || '').slice(0, 60),
+            title: (selfLoc.name || newChat.message || '').slice(0, 60),
           });
 
           const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
           if (msgIdLoc) {
-            // ✅ dest-də bu mesaj location tipidir, reply üçün saxla
             const quotedMessageForDest = {
               locationMessage: {
-                degreesLatitude: loc.lat,
-                degreesLongitude: loc.lng,
-                name: loc.name || undefined,
-                address: loc.address || undefined,
-                jpegThumbnail: loc._raw?.jpegThumbnail || undefined, // ✅ əlavə et
+                degreesLatitude: selfLoc.lat,
+                degreesLongitude: selfLoc.lng,
+                name: selfLoc.name || undefined,
+                address: selfLoc.address || undefined,
+                jpegThumbnail: selfLoc._raw?.jpegThumbnail || undefined,
               },
             };
             Object.keys(quotedMessageForDest.locationMessage).forEach(k => {
@@ -712,7 +709,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc, quotedMessageForDest);
           }
 
-          // ✅ Tail yalnız reply DEYİLSƏ göndər (yoxsa reply thread-i pozur)
           if (!isReply) {
             await enqueueSend(jid, () => sendText({
               to: jid,
@@ -722,12 +718,11 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             }));
           }
         }
-
       } catch (e) {
         console.error('Forward (location) error:', e?.response?.data || e.message);
       }
 
-      return; // ✅ location bitdi
+      return;
     }
 
     // 2) text
