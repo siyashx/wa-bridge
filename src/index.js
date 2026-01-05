@@ -695,7 +695,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
               to: jid,
               latitude: effectiveLoc.lat,
               longitude: effectiveLoc.lng,
-              name: effectiveLoc.name || effectiveLoc.caption || 'Konum',
+              name: effectiveLoc.name || effectiveLoc.caption || '',
               address: effectiveLoc.address || undefined,
               replyTo,
               quotedMessage: destQuotedMessage || undefined,

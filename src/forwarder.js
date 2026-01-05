@@ -133,8 +133,8 @@ export async function sendLocation({
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-  const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
-  const addr = (address && String(address).trim()) ? String(address).trim() : "—";
+  const title = (name && String(name).trim()) ? String(name).trim() : "";
+  const addr = (address && String(address).trim()) ? String(address).trim() : "";
 
   const replyBundle = replyTo
     ? buildReplyBundle({
