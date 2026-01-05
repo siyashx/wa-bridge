@@ -693,10 +693,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
                 degreesLongitude: loc.lng,
                 name: loc.name || undefined,
                 address: loc.address || undefined,
+                jpegThumbnail: loc._raw?.jpegThumbnail || undefined, // ✅ əlavə et
               },
             };
-
-            // undefined-ləri təmizlə
             Object.keys(quotedMessageForDest.locationMessage).forEach(k => {
               if (quotedMessageForDest.locationMessage[k] === undefined) delete quotedMessageForDest.locationMessage[k];
             });
@@ -796,10 +795,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
       for (const jid of targets) {
         let replyTo;
+        let destQuotedMessage;
 
-        // ✅ Reply mesajdırsa: dest-dəki map olunmuş msgId-ni tap
         if (isReply && quoted?.stanzaId) {
-          replyTo = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid) || undefined;
+          const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
+          replyTo = rec?.msgId || undefined;
+          destQuotedMessage = rec?.quotedMessage || null; // (text üçün optional)
         }
 
         if (isReply) {
@@ -825,9 +826,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         const resp = await enqueueSend(jid, () => sendText({
           to: jid,
           text: bridged,
-          replyTo,
-          quotedParticipant: quoted?.participant || undefined,
+          replyTo, // ✅ string
           quotedText: quoted?.text || undefined,
+          // istəyirsən sendText-ə də quotedMessage əlavə edərik (amma lazım deyil)
         }));
 
         // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)

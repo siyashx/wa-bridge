@@ -15,31 +15,49 @@ function evoHeaders() {
 function buildReplyPayload({ chatJid, replyTo, quotedText, quotedMessage }) {
   if (!replyTo) return {};
 
-  // ✅ Əsas: quoted.message tipi düzgün olsun
-  // - location reply üçün: { locationMessage: {...} }
-  // - text reply üçün: { conversation: "..." }
   const messageObj =
     (quotedMessage && typeof quotedMessage === 'object')
       ? quotedMessage
       : { conversation: quotedText || "" };
 
-  const quoted = {
-    key: {
-      remoteJid: chatJid,
-      fromMe: true,  // ✅ dest-də quoted mesajı bot göndərib
-      id: replyTo,
-    },
-    message: messageObj,
-  };
-
-  return {
+  // Variant-1: quoted (sendText-də yaxşı işləyir)
+  const v1 = {
     replyTo,
     quotedMsgId: replyTo,
     quotedMessageId: replyTo,
-    quoted,
+    quoted: {
+      key: { remoteJid: chatJid, fromMe: true, id: replyTo },
+      message: messageObj,
+    },
     contextInfo: { stanzaId: replyTo },
   };
+
+  // Variant-2: bəzi build-lərdə media/location üçün yalnız contextInfo işləyir
+  const v2 = {
+    replyTo,
+    contextInfo: {
+      stanzaId: replyTo,
+      quotedMessage: messageObj,
+    },
+  };
+
+  return { v1, v2 };
 }
+
+function cleanPayload(p) {
+  Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
+  if (p.contextInfo) {
+    Object.keys(p.contextInfo).forEach(k => p.contextInfo[k] === undefined && delete p.contextInfo[k]);
+    if (!Object.keys(p.contextInfo).length) delete p.contextInfo;
+  }
+  if (p.quoted) {
+    // quoted.key/message içində undefined varsa sil
+    if (p.quoted?.key) Object.keys(p.quoted.key).forEach(k => p.quoted.key[k] === undefined && delete p.quoted.key[k]);
+    if (p.quoted?.message) Object.keys(p.quoted.message).forEach(k => p.quoted.message[k] === undefined && delete p.quoted.message[k]);
+  }
+  return p;
+}
+
 
 export async function sendText({ to, text, mentions, replyTo, quotedParticipant, quotedText }) {
   if (process.env.DRY_RUN) {
@@ -52,13 +70,9 @@ export async function sendText({ to, text, mentions, replyTo, quotedParticipant,
     mentions,
   };
 
-  // ✅ Reply varsa: Evolution-un bəzi build-ləri quoted KEY+MESSAGE istəyir
   if (replyTo) {
-    Object.assign(payload, buildReplyPayload({
-      chatJid: to,
-      replyTo,
-      quotedText,
-    }));
+    const { v1 } = buildReplyPayload({ chatJid: to, replyTo, quotedText });
+    Object.assign(payload, v1);
   }
 
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -90,27 +104,27 @@ export async function sendLocation({ to, latitude, longitude, name, address, rep
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-   const baseQuoted = replyTo
+  const replyPack = replyTo
     ? buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage })
-    : {};
+    : null;
+
+  const payloads = [
+    // ✅ əvvəl v1
+    { number: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
+    { number: to, lat, lng, name: title, address, ...(replyPack?.v1 || {}) },
+    { to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
+    { chatId: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
+
+    // ✅ sonra v2 (location reply üçün çox vaxt bu işləyir)
+    { number: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
+    { number: to, lat, lng, name: title, address, ...(replyPack?.v2 || {}) },
+    { to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
+    { chatId: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
+  ].map(cleanPayload);
 
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
 
   // ✅ müxtəlif schema-ları bir-bir sınayırıq
-  const payloads = [
-    { number: to, latitude: lat, longitude: lng, name: title, address, ...baseQuoted },
-    { number: to, lat, lng, name: title, address, ...baseQuoted },
-    { to, latitude: lat, longitude: lng, name: title, address, ...baseQuoted },
-    { chatId: to, latitude: lat, longitude: lng, name: title, address, ...baseQuoted },
-  ].map(p => {
-    Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
-    // contextInfo boşdursa sil
-    if (p.contextInfo) {
-      Object.keys(p.contextInfo).forEach(k => p.contextInfo[k] === undefined && delete p.contextInfo[k]);
-      if (!Object.keys(p.contextInfo).length) delete p.contextInfo;
-    }
-    return p;
-  });
 
   let lastErr;
 
