@@ -659,28 +659,52 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         console.log('FORWARD targets (loc)=', targets);
 
         for (const jid of targets) {
+          let replyTo;
+
+          // ✅ location reply üçün də map edilmiş msgId-ni tap
+          if (isReply && quoted?.stanzaId) {
+            replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
+          }
+
+          if (isReply) {
+            console.log("REPLY DEBUG (loc)", {
+              sourceQuotedStanzaId: quoted?.stanzaId,
+              destJid: jid,
+              destReplyTo: replyTo || null,
+              quotedText: quoted?.text || null,
+              quotedParticipant: quoted?.participant || null,
+            });
+          }
+
           const respLoc = await enqueueSend(jid, () => sendLocation({
             to: jid,
             latitude: loc.lat,
             longitude: loc.lng,
             name: loc.name || (newChat.message?.trim() || 'Konum'),
             address: loc.address || undefined,
+
+            // ✅ əlavə et
+            replyTo,
+            quotedParticipant: quoted?.participant || undefined,
+            quotedText: quoted?.text || undefined,
           }));
 
           const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
           if (msgIdLoc) {
-            // ✅ reply mapping üçün saxla
             forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
           }
 
-          // ✅ sonra tail
-          await enqueueSend(jid, () => sendText({
-            to: jid,
-            text: (typeof SUB_ONLY_DEST_JID !== 'undefined' && jid === SUB_ONLY_DEST_JID)
-              ? SUB_ONLY_TAIL
-              : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`
-          }));
+          // ✅ Tail yalnız reply DEYİLSƏ göndər (yoxsa reply thread-i pozur)
+          if (!isReply) {
+            await enqueueSend(jid, () => sendText({
+              to: jid,
+              text: (typeof SUB_ONLY_DEST_JID !== 'undefined' && jid === SUB_ONLY_DEST_JID)
+                ? SUB_ONLY_TAIL
+                : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`
+            }));
+          }
         }
+
       } catch (e) {
         console.error('Forward (location) error:', e?.response?.data || e.message);
       }
@@ -769,12 +793,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         }
 
         if (isReply) {
-            console.log("REPLY DEBUG", {
-              sourceQuotedStanzaId: quoted?.stanzaId,
-              destReplyTo: replyTo || null,
-              quotedText: quoted?.text || null,
-              quotedParticipant: quoted?.participant || null,
-            });
+          console.log("REPLY DEBUG", {
+            sourceQuotedStanzaId: quoted?.stanzaId,
+            destReplyTo: replyTo || null,
+            quotedText: quoted?.text || null,
+            quotedParticipant: quoted?.participant || null,
+          });
         }
 
         let bridged = bridgedBase;

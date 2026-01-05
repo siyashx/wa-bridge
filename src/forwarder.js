@@ -69,9 +69,7 @@ export async function sendText({ to, text, mentions, replyTo, quotedParticipant,
   return { ...res.data, msgId };
 }
 
-
-
-export async function sendLocation({ to, latitude, longitude, name, address }) {
+export async function sendLocation({ to, latitude, longitude, name, address, replyTo, quotedParticipant, quotedText }) {
   if (process.env.DRY_RUN) {
     return { success: true, msgId: "dry_run" };
   }
@@ -83,16 +81,42 @@ export async function sendLocation({ to, latitude, longitude, name, address }) {
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
+  const baseQuoted = (replyTo ? {
+    replyTo,
+    quotedMsgId: replyTo,
+    quotedMessageId: replyTo,
+    quoted: {
+      key: {
+        remoteJid: to,
+        fromMe: false,
+        id: replyTo,
+        participant: quotedParticipant || undefined,
+      },
+      message: {
+        conversation: quotedText || "",
+      },
+    },
+    contextInfo: {
+      stanzaId: replyTo,
+      participant: quotedParticipant || undefined,
+    },
+  } : {});
+
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
 
   // ✅ müxtəlif schema-ları bir-bir sınayırıq
   const payloads = [
-    { number: to, latitude: lat, longitude: lng, name: title, address },  // 1
-    { number: to, lat, lng, name: title, address },                       // 2
-    { to, latitude: lat, longitude: lng, name: title, address },          // 3
-    { chatId: to, latitude: lat, longitude: lng, name: title, address },  // 4
+    { number: to, latitude: lat, longitude: lng, name: title, address, ...baseQuoted },
+    { number: to, lat, lng, name: title, address, ...baseQuoted },
+    { to, latitude: lat, longitude: lng, name: title, address, ...baseQuoted },
+    { chatId: to, latitude: lat, longitude: lng, name: title, address, ...baseQuoted },
   ].map(p => {
     Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
+    // contextInfo boşdursa sil
+    if (p.contextInfo) {
+      Object.keys(p.contextInfo).forEach(k => p.contextInfo[k] === undefined && delete p.contextInfo[k]);
+      if (!Object.keys(p.contextInfo).length) delete p.contextInfo;
+    }
     return p;
   });
 
