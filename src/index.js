@@ -684,6 +684,14 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             quotedText: quoted?.text || undefined,
           }));
 
+          console.log("SEND LOC DEBUG", {
+            to: jid,
+            isReply,
+            replyTo,
+            hasQuotedMessage: !!destQuotedMessage,
+            title: (loc.name || newChat.message || '').slice(0, 60),
+          });
+
           const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
           if (msgIdLoc) {
             // ✅ dest-də bu mesaj location tipidir, reply üçün saxla

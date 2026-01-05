@@ -29,7 +29,10 @@ function buildReplyPayload({ chatJid, replyTo, quotedText, quotedMessage }) {
       key: { remoteJid: chatJid, fromMe: true, id: replyTo },
       message: messageObj,
     },
-    contextInfo: { stanzaId: replyTo },
+    contextInfo: {
+      stanzaId: replyTo,
+      quotedMessage: messageObj, // ✅ əlavə et
+    },
   };
 
   // Variant-2: bəzi build-lərdə media/location üçün yalnız contextInfo işləyir
@@ -57,7 +60,6 @@ function cleanPayload(p) {
   }
   return p;
 }
-
 
 export async function sendText({ to, text, mentions, replyTo, quotedParticipant, quotedText }) {
   if (process.env.DRY_RUN) {
@@ -93,38 +95,36 @@ export async function sendText({ to, text, mentions, replyTo, quotedParticipant,
 }
 
 export async function sendLocation({ to, latitude, longitude, name, address, replyTo, quotedText, quotedMessage }) {
-  if (process.env.DRY_RUN) {
-    return { success: true, msgId: "dry_run" };
-  }
+  if (process.env.DRY_RUN) return { success: true, msgId: "dry_run" };
 
   const lat = Number(latitude);
   const lng = Number(longitude);
-
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
+  // ✅ 1) əvvəl title
+  const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
+
+  // ✅ 2) sonra replyPack
   const replyPack = replyTo
     ? buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage })
     : null;
 
+  // ✅ 3) sonra payloads
   const payloads = [
-    // ✅ əvvəl v1
+    // v1
     { number: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
     { number: to, lat, lng, name: title, address, ...(replyPack?.v1 || {}) },
     { to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
     { chatId: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
 
-    // ✅ sonra v2 (location reply üçün çox vaxt bu işləyir)
+    // v2
     { number: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
     { number: to, lat, lng, name: title, address, ...(replyPack?.v2 || {}) },
     { to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
     { chatId: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
   ].map(cleanPayload);
-
-  const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
-
-  // ✅ müxtəlif schema-ları bir-bir sınayırıq
 
   let lastErr;
 
@@ -137,30 +137,17 @@ export async function sendLocation({ to, latitude, longitude, name, address, rep
         { headers: evoHeaders(), timeout: 15000 }
       );
 
-      const msgId =
-        res?.data?.key?.id ||
-        res?.data?.messageId ||
-        res?.data?.msgId ||
-        null;
-
+      const msgId = res?.data?.key?.id || res?.data?.messageId || res?.data?.msgId || null;
       return { ...res.data, msgId };
     } catch (e) {
       lastErr = e;
-
-      // ✅ 400 olsa növbəti payload sınayırıq
       const status = e?.response?.status;
       if (status && status !== 400) throw e;
 
-      // debug üçün qısa log
-      console.error("sendLocation schema failed", {
-        i,
-        status,
-        data: e?.response?.data,
-      });
+      console.error("sendLocation schema failed", { i, status, data: e?.response?.data });
     }
   }
 
-  // hamısı fail olsa
   throw lastErr;
 }
 
