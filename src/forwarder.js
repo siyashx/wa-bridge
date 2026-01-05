@@ -134,16 +134,16 @@ export async function sendLocation({
   }
 
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
-  const addr = (address && String(address).trim()) ? String(address).trim() : undefined;
+  const addr = (address && String(address).trim()) ? String(address).trim() : "—";
 
   const replyBundle = replyTo
     ? buildReplyBundle({
-        chatJid: to,
-        replyTo,
-        quotedText,
-        quotedMessage,
-        quotedFromMe,
-      })
+      chatJid: to,
+      replyTo,
+      quotedText,
+      quotedMessage,
+      quotedFromMe,
+    })
     : {};
 
   // ✅ 3 variant: fərqli Evolution build-lər fərqli schema istəyir
@@ -207,5 +207,4 @@ export async function sendLocation({
 
   throw lastErr;
 }
-
 
