@@ -12,35 +12,32 @@ function evoHeaders() {
   };
 }
 
-function buildReplyPayload({ chatJid, replyTo, quotedText }) {
+function buildReplyPayload({ chatJid, replyTo, quotedText, quotedMessage }) {
   if (!replyTo) return {};
 
-  // ✅ quoted mesaj DEST qrupda bizim göndərdiyimiz mesajdır => fromMe:true
+  // ✅ Əsas: quoted.message tipi düzgün olsun
+  // - location reply üçün: { locationMessage: {...} }
+  // - text reply üçün: { conversation: "..." }
+  const messageObj =
+    (quotedMessage && typeof quotedMessage === 'object')
+      ? quotedMessage
+      : { conversation: quotedText || "" };
+
   const quoted = {
     key: {
       remoteJid: chatJid,
-      fromMe: true,
+      fromMe: true,  // ✅ dest-də quoted mesajı bot göndərib
       id: replyTo,
-      // participant QOYMA! (fromMe:true olanda lazım deyil, çox vaxt tap-to-open-i pozur)
     },
-    message: {
-      conversation: quotedText || "",
-    },
-  };
-
-  const contextInfo = {
-    stanzaId: replyTo,
-    // participant QOYMA!
+    message: messageObj,
   };
 
   return {
-    // bəzi Evolution build-lər bunları istəyir (problem yaratmırsa saxla)
     replyTo,
     quotedMsgId: replyTo,
     quotedMessageId: replyTo,
-
     quoted,
-    contextInfo,
+    contextInfo: { stanzaId: replyTo },
   };
 }
 
@@ -81,7 +78,7 @@ export async function sendText({ to, text, mentions, replyTo, quotedParticipant,
   return { ...res.data, msgId };
 }
 
-export async function sendLocation({ to, latitude, longitude, name, address, replyTo, quotedParticipant, quotedText }) {
+export async function sendLocation({ to, latitude, longitude, name, address, replyTo, quotedText, quotedMessage }) {
   if (process.env.DRY_RUN) {
     return { success: true, msgId: "dry_run" };
   }
@@ -93,8 +90,8 @@ export async function sendLocation({ to, latitude, longitude, name, address, rep
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-  const baseQuoted = replyTo
-    ? buildReplyPayload({ chatJid: to, replyTo, quotedText })
+   const baseQuoted = replyTo
+    ? buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage })
     : {};
 
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";

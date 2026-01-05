@@ -154,16 +154,16 @@ function fmKey(sourceGroupJid, sourceMsgId) {
   return `${sourceGroupJid}::${sourceMsgId}`;
 }
 
-function forwardMapPut(sourceGroupJid, sourceMsgId, destJid, msgId) {
+function forwardMapPut(sourceGroupJid, sourceMsgId, destJid, msgId, quotedMessage) {
   if (!sourceMsgId || !destJid || !msgId) return;
   const key = fmKey(sourceGroupJid, sourceMsgId);
   const now = Date.now();
+
   const cur = forwardMap.get(key) || { ts: now, dest: {} };
   cur.ts = now;
-  cur.dest[destJid] = msgId;
+  cur.dest[destJid] = { msgId, quotedMessage: quotedMessage || null };
   forwardMap.set(key, cur);
 
-  // sadə cleanup
   if (forwardMap.size > 20000) {
     const cutoff = now - FORWARDMAP_TTL;
     for (const [k, v] of forwardMap) {
@@ -172,15 +172,16 @@ function forwardMapPut(sourceGroupJid, sourceMsgId, destJid, msgId) {
   }
 }
 
-function forwardMapGet(sourceGroupJid, sourceMsgId, destJid) {
+function forwardMapGetRec(sourceGroupJid, sourceMsgId, destJid) {
   const key = fmKey(sourceGroupJid, sourceMsgId);
   const rec = forwardMap.get(key);
   if (!rec) return null;
+
   if (Date.now() - rec.ts > FORWARDMAP_TTL) {
     forwardMap.delete(key);
     return null;
   }
-  return rec.dest?.[destJid] || null;
+  return rec.dest?.[destJid] || null; // {msgId, quotedMessage}
 }
 
 /* ---------------- helpers ---------------- */
@@ -660,20 +661,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
         for (const jid of targets) {
           let replyTo;
+          let destQuotedMessage;
 
-          // ✅ location reply üçün də map edilmiş msgId-ni tap
           if (isReply && quoted?.stanzaId) {
-            replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
-          }
-
-          if (isReply) {
-            console.log("REPLY DEBUG (loc)", {
-              sourceQuotedStanzaId: quoted?.stanzaId,
-              destJid: jid,
-              destReplyTo: replyTo || null,
-              quotedText: quoted?.text || null,
-              quotedParticipant: quoted?.participant || null,
-            });
+            const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
+            replyTo = rec?.msgId || undefined;
+            destQuotedMessage = rec?.quotedMessage || null;
           }
 
           const respLoc = await enqueueSend(jid, () => sendLocation({
@@ -683,15 +676,32 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             name: loc.name || (newChat.message?.trim() || 'Konum'),
             address: loc.address || undefined,
 
-            // ✅ əlavə et
             replyTo,
-            quotedParticipant: quoted?.participant || undefined,
+            // ✅ ƏN VACİB: location reply üçün message tipi
+            quotedMessage: destQuotedMessage || undefined,
+
+            // fallback (problem olmasa da)
             quotedText: quoted?.text || undefined,
           }));
 
           const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
           if (msgIdLoc) {
-            forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
+            // ✅ dest-də bu mesaj location tipidir, reply üçün saxla
+            const quotedMessageForDest = {
+              locationMessage: {
+                degreesLatitude: loc.lat,
+                degreesLongitude: loc.lng,
+                name: loc.name || undefined,
+                address: loc.address || undefined,
+              },
+            };
+
+            // undefined-ləri təmizlə
+            Object.keys(quotedMessageForDest.locationMessage).forEach(k => {
+              if (quotedMessageForDest.locationMessage[k] === undefined) delete quotedMessageForDest.locationMessage[k];
+            });
+
+            forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc, quotedMessageForDest);
           }
 
           // ✅ Tail yalnız reply DEYİLSƏ göndər (yoxsa reply thread-i pozur)
@@ -789,7 +799,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
         // ✅ Reply mesajdırsa: dest-dəki map olunmuş msgId-ni tap
         if (isReply && quoted?.stanzaId) {
-          replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
+          replyTo = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid) || undefined;
         }
 
         if (isReply) {
