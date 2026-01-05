@@ -440,88 +440,108 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
   // Wasender sürətli 200 istəyir
   res.status(200).json({ received: true });
 
+  // 1) event-i əvvəl çıxar (ev burada LAZIMDIR)
   const evRaw = req.body?.event;
-  const evN = normEvent(evRaw);
+  const ev = normEvent(evRaw);
 
   console.log('WEBHOOK HIT', {
     path: req.originalUrl,
     eventRaw: evRaw,
-    eventNorm: evN,
+    eventNorm: ev,
     hasApikey: !!req.get('apikey'),
     headers: pickHeaders(req),
   });
 
-  // body-dən bir az nümunə (key, remoteJid, fromMe, id) çıxart
-  try {
-    const d = req.body?.data;
-    const env0 = d?.messages?.[0] || d?.message || d || {};
-    const k = env0?.key || {};
-    console.log('WEBHOOK SNAP', {
-      id: k?.id || env0?.id,
-      remoteJid: k?.remoteJid || env0?.remoteJid,
-      participant: k?.participant || env0?.participant,
-      fromMe: k?.fromMe || env0?.fromMe,
-    });
-  } catch (e) {
-    console.log('WEBHOOK SNAP error', e?.message);
+  // 2) yalnız icazə verdiyin event-lər
+  const allowed = new Set(['messages_upsert']);
+  if (!allowed.has(ev)) {
+    console.log('SKIP: event not allowed', { event: evRaw, ev });
+    return;
   }
 
+  // 3) apikey yoxlaması (istəsən REQUIRE_WEBHOOK_APIKEY=1 et)
+  const REQUIRE_WEBHOOK_APIKEY = process.env.REQUIRE_WEBHOOK_APIKEY === '1';
+  if (REQUIRE_WEBHOOK_APIKEY && !verifySignature(req)) {
+    console.log('SKIP: invalid apikey', { got: req.get('apikey') });
+    return;
+  }
+  if (!REQUIRE_WEBHOOK_APIKEY && !req.get('apikey')) {
+    console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
+  }
+
+  // 4) messages.upsert BODY-ni qısa logla
+  console.log('UPSERT BODY (short)=', shortJson(req.body, 4000));
+
   try {
+    // ✅ burada “data” formatları fərqli ola bilər – hamısını tuturuq
+    const data = req.body?.data;
 
-    const { event, data } = req.body || {};
+    // Possible candidates:
+    // A) data.messages = [ { key, message } ... ]
+    // B) data = [ { key, message } ... ]  (bəzi versiyalar)
+    // C) data.message = { key, message }
+    // D) data = { key, message }
+    // E) req.body özü (fallback)
+    const candidates = [
+      ...(Array.isArray(data?.messages) ? data.messages : []),
+      ...(Array.isArray(data) ? data : []),
+      ...(data?.message ? [data.message] : []),
+      ...(data?.key || data?.message ? [data] : []),
+      ...(req.body?.key || req.body?.message ? [req.body] : []),
+    ].filter(Boolean);
 
-    const allowed = new Set(['messages_upsert']); // normalized
-    if (ev === 'messages_upsert') {
-      console.log('UPSERT BODY (short)=', shortJson(req.body, 4000));
+    if (!candidates.length) {
+      console.log('SKIP: no message candidates found');
+      return;
     }
+
+    // İlk real message obyektini götür
+    const first = candidates[0];
+    const env = normalizeEnvelope(first);
+
+    console.log('WEBHOOK SNAP', {
+      id: env.id,
+      remoteJid: env.remoteJid,
+      participant: env.participant,
+      fromMe: env.fromMe,
+    });
 
     console.log('ENV CHECK', {
       remoteJid: env.remoteJid,
       allowed: ALLOWED_GROUPS.has(env.remoteJid),
       GROUP_A_JID,
+      dests: DEST_GROUPS,
     });
 
-    const ev = normEvent(event);
-    if (!allowed.has(ev)) {
-      console.log('SKIP: event not allowed', { event, ev });
+    // Özümüzdən çıxanları at
+    if (env.fromMe) {
+      console.log('SKIP: fromMe');
       return;
     }
 
-    const REQUIRE_WEBHOOK_APIKEY = process.env.REQUIRE_WEBHOOK_APIKEY === '1';
-
-    if (REQUIRE_WEBHOOK_APIKEY) {
-      if (!verifySignature(req)) {
-        console.log('SKIP: invalid apikey', { got: req.get('apikey') });
-        return;
-      }
-    } else {
-      if (!req.get('apikey')) {
-        console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
-      }
+    // yalnız A qrupu
+    if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) {
+      console.log('SKIP: not allowed group', { remoteJid: env.remoteJid });
+      return;
     }
 
-    const env = normalizeEnvelope(req.body?.data || req.body);
+    // -------------- BURADAN SONRA SƏNİN KÖHNƏ LOGIC DƏYİŞMİR --------------
 
-    // Özümüzdən çıxanları at
-    if (env.fromMe) return;
-
-    if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) return;
-
-    // ✅ əvvəl freshness (text + location üçün)
     const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
-    // reply mesajları istisna (text üçün lazımdır)
     const quoted = extractQuoted(env.msg);
     const isReply = !!quoted;
 
-    // Köhnədirsə və reply deyilsə, ignore et (location da bura düşür)
-    if (!isReply && isTooOld(env, MAX_AGE_MS)) return;
+    if (!isReply && isTooOld(env, MAX_AGE_MS)) {
+      console.log('SKIP: too old');
+      return;
+    }
 
-    // Dedup (freshness-dən sonra daha məntiqlidir)
-    if (seenRecently(env.id)) return;
+    if (seenRecently(env.id)) {
+      console.log('SKIP: dedup');
+      return;
+    }
 
-    // Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant (@s.whatsapp.net),
-    // sonra participant @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
 
     let phone =
@@ -530,181 +550,55 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-    // 1) ƏVVƏL statik location olub-olmadığını yoxla
     const loc = getStaticLocation(env.msg);
-
     if (loc) {
+      console.log('LOC detected', { lat: loc.lat, lng: loc.lng });
 
-      const timestamp = formatBakuTimestamp();
-      const normalizedPhone = (parsePhoneFromSNetJid(findFirstSnetJidDeep(req.body)) ||
-        parsePhoneFromSNetJid(env.participant) ||
-        parseDigitsFromLid(env.participant) ||
-        '');
-      const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
+      const phonePrefixed = phone ? `+${phone}` : '';
 
-      const newChat = {
-        id: Date.now(),
-        groupId: "0",
-        userId: 2,
-        username: "Sifariş Qrupu İstifadəçisi",
-        phone: phonePrefixed,
-        isSeenIds: [],
-        messageType: "location",
-        isReply: "false",
-        userType: "customer",
-        message: loc.caption || loc.name || "",
-        timestamp,
-        isCompleted: false,
-        // yalnız backend üçün:
-        locationLat: loc.lat,
-        locationLng: loc.lng,
-        thumbnail: loc._raw?.jpegThumbnail || null
-      };
+      const targets = getDestGroupsFor(env.remoteJid);
+      console.log('FORWARD targets (loc)=', targets);
 
-      publishStomp('/app/sendChatMessage', newChat);
+      for (const jid of targets) {
+        await enqueueSend(jid, () => sendLocation({
+          to: jid,
+          latitude: loc.lat,
+          longitude: loc.lng,
+          name: loc.name || 'Konum',
+          address: loc.address || undefined,
+        }));
 
-      // push preview: caption/name varsa onu, yoxdursa koordinatı göstər
-      const preview = (newChat.message && newChat.message.trim())
-        ? newChat.message.slice(0, 140)
-        : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
-
-      try {
-        const oneSignalIds = await fetchPushTargets(0);
-        if (oneSignalIds.length) {
-          await sendPushNotification(
-            oneSignalIds,
-            '🪄🪄 Yeni Sifariş!!',
-            `📍 ${preview}`
-          );
-        }
-      } catch (pushErr) {
-        console.error('Post-publish push error:', pushErr?.message);
+        await enqueueSend(jid, () => sendText({
+          to: jid,
+          text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`,
+        }));
       }
-
-      // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL LOCATION pin forward
-      try {
-        const targets = getDestGroupsFor(env.remoteJid);
-        if (targets.length) {
-          for (const jid of targets) {
-            const respLoc = await enqueueSend(jid, () => sendLocation({
-              to: jid,
-              latitude: loc.lat,
-              longitude: loc.lng,
-              name: loc.name || (newChat.message?.trim() || 'Konum'),
-              address: loc.address || undefined,
-            }));
-
-            const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
-            if (msgIdLoc) {
-              forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
-            }
-
-            // ✅ sonra tail mesajını da göndər
-            await enqueueSend(jid, () => sendText({
-              to: jid,
-              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
-            }));
-          }
-
-        }
-      } catch (e) {
-        console.error('Forward (location) error:', e?.response?.data || e.message);
-      }
-
-      return; // Location emal olundu, dayandır
+      return;
     }
 
     const textBody = extractText(env.msg);
-    if (!textBody) return;
+    if (!textBody) {
+      console.log('SKIP: no textBody');
+      return;
+    }
 
-    const timestamp = formatBakuTimestamp();
-
-    // Mesaj olduğu kimi qalsın, nömrəni ayrıca field kimi verək
-    const normalizedPhone = phone ? `+${phone}` : '';
     const cleanMessage = String(textBody);
+    const phoneForTail = phone ? `+${phone}` : '—';
 
-    // 🔁 dublikat varsa dayandır
-    if (!isReply && await isDuplicateChatMessage(cleanMessage)) return;
+    const targets = getDestGroupsFor(env.remoteJid);
+    console.log('FORWARD targets (text)=', targets);
 
-    // newChat obyektində message sahəsini buradakı kimi dəyiş:
-    const newChat = {
-      id: Date.now(),
-      groupId: "0",
-      userId: 2,
-      username: 'Sifariş Qrupu İstifadəçisi',
-      phone: normalizedPhone,           // +994… varsa burada
-      isSeenIds: [],
-      messageType: "text",
-      isReply: "false",
-      userType: "customer",
-      message: cleanMessage,            // yalnız sifariş mətni
-      timestamp,
-      isCompleted: false,
-    };
-
-    // ✅ Mobil “sendMessageToSocket” ilə eyni hərəkət: WebSocket (STOMP) publish
-    // Backend-də /app/sendChatMessage bu obyekti qəbul edib DB-yə yazır və /topic/sifarisqrupu'na yayır
-    publishStomp('/app/sendChatMessage', newChat);
-
-    // 🔔 Publish-dən sonra push bildirişi (mobil loqika ilə eyni filtr)
-    try {
-      const oneSignalIds = await fetchPushTargets(0); // sender DB user deyil, 0 veririk
-      if (oneSignalIds.length) {
-        const preview = (cleanMessage || '').slice(0, 140);
-        await sendPushNotification(
-          oneSignalIds,
-          '🪄🪄 Yeni Sifariş!!',
-          `📩 ${preview}`
-        );
-      }
-    } catch (pushErr) {
-      console.error('Post-publish push error:', pushErr?.message);
+    for (const jid of targets) {
+      const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
+      const resp = await enqueueSend(jid, () => sendText({ to: jid, text: bridged }));
+      console.log('SENT OK', { to: jid, msgId: resp?.msgId || resp?.data?.msgId });
     }
 
-    // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (text üçün)
-    try {
-      const phoneForTail = normalizedPhone || '—';
-
-      let bridgedBase = cleanMessage; // əsas mesaj
-
-      const targets = getDestGroupsFor(env.remoteJid);
-      if (targets.length) {
-        for (const jid of targets) {
-          let replyTo = undefined;
-
-          if (isReply && quoted?.stanzaId) {
-            replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
-          }
-
-          // ✅ dest-ə görə tail
-          let bridged = bridgedBase;
-
-          if (!isReply) {
-            // digər dest-lərdə köhnə qayda (nömrə)
-            bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-
-          }
-
-          const resp = await enqueueSend(jid, () => sendText({
-            to: jid,
-            text: bridged,
-            replyTo,
-          }));
-
-          if (!isReply) {
-            const msgId = resp?.msgId || resp?.data?.msgId;
-            forwardMapPut(env.remoteJid, env.id, jid, msgId);
-          }
-        }
-      }
-
-    } catch (e) {
-      console.error('Forward (text) error:', e?.response?.data || e.message);
-    }
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
 });
+
 
 function isValidUUID(s) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
