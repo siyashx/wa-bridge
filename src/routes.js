@@ -29,8 +29,10 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       const remoteJid = m.key?.remoteJid;
       const senderJid = m.key?.participant || '';
 
-      // yalnız A qrupu
-      if (remoteJid !== process.env.GROUP_A_JID) continue;
+      const A = process.env.GROUP_A_JID;
+      const B = process.env.GROUP_B_JID;
+
+      if (remoteJid !== A && remoteJid !== B) continue;
 
       const msg = m.message || {};
 
@@ -48,7 +50,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
       // B qrupuna ötür
       await sendText({
-        to: process.env.GROUP_B_JID,
+        to: process.env.DEST_GROUP_JIDS,
         text: bridged,
       });
     }

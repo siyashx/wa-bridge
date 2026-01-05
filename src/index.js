@@ -13,6 +13,7 @@ const {
   PORT = 4242,
   EVOLUTION_API_KEY,
   GROUP_A_JID,
+  GROUP_B_JID,
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   WS_URL = 'wss://mototaksi.az:9898/ws',
   ONE_SIGNAL_APP_ID,
@@ -21,7 +22,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID].filter(Boolean)
+  [GROUP_A_JID, GROUP_A_JID].filter(Boolean)
 );
 
 // ✅ Hədəf (forward) qrupların siyahısı
@@ -262,7 +263,7 @@ function getDestGroupsFor(sourceJid) {
   } */
 
   // 2) A qrupundan gəlirsə: hər iki dest-ə göndər (listdə nə varsa)
-  if (sourceJid === GROUP_A_JID) {
+  if (sourceJid === GROUP_A_JID || sourceJid === GROUP_B_JID) {
     return DEST_GROUPS.slice();
   }
 
@@ -722,20 +723,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             }
 
           } catch (err) {
-            // ✅ Location endpoint 400 verirsə, heç olmasa TEXT fallback göndər
-            console.error('sendLocation failed -> fallback to text', err?.response?.data || err?.message);
-
-            const maps = `https://maps.google.com/?q=${effectiveLoc.lat},${effectiveLoc.lng}`;
-            const fallbackText =
-              `📍 Lokasiya: ${effectiveLoc.name || ''}\n${effectiveLoc.address || ''}\n${maps}`.trim();
-
-            await enqueueSend(jid, () => sendText({
-              to: jid,
-              text: fallbackText,
-              replyTo,
-              quotedText: quoted?.text || undefined,
-              quotedMessage: destQuotedMessage || undefined,
-            }));
+            console.error('sendLocation failed (NO FALLBACK)', err?.response?.data || err?.message);
+            // ❌ Heç bir text göndərmə
+            // istəsən notify üçün 1 dənə admin log / push edə bilərsən, amma WA-ya link atma
           }
 
           // ✅ Tail: reply DEYİLSƏ həmişə göndər (location uğurlu da olsa, fallback da olsa)
@@ -848,7 +838,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
         let bridged = bridgedBase;
         if (!isReply) bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-
 
         const resp = await enqueueSend(jid, () => sendText({
           to: jid,

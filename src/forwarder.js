@@ -137,12 +137,12 @@ export async function sendLocation({
 
   const replyBundle = replyTo
     ? buildReplyBundle({
-        chatJid: to,
-        replyTo,
-        quotedText,
-        quotedMessage,
-        quotedFromMe,
-      })
+      chatJid: to,
+      replyTo,
+      quotedText,
+      quotedMessage,
+      quotedFromMe,
+    })
     : {};
 
   // ✅ 2 variant: bəzi evolution build-lər latitude/longitude istəyir, bəziləri lat/lng
@@ -151,16 +151,12 @@ export async function sendLocation({
       number: to,
       latitude: lat,
       longitude: lng,
-      name: title,
-      address: address || undefined,
       ...replyBundle,
     }),
     clean({
       number: to,
       lat,
       lng,
-      name: title,
-      address: address || undefined,
       ...replyBundle,
     }),
   ];
@@ -193,3 +189,4 @@ export async function sendLocation({
 
   throw lastErr;
 }
+
