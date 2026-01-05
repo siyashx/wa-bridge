@@ -363,10 +363,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
   try {
 
-    if (!verifySignature(req)) {
-      return;
-    }
-
     const { event, data } = req.body || {};
 
     const allowed = new Set(['MESSAGES_UPSERT']);
