@@ -432,6 +432,39 @@ function getStaticLocation(msg) {
   };
 }
 
+// ✅ Reply içində gələn location-u çıxarır (quotedMessage.locationMessage)
+function getQuotedLocation(msg) {
+  if (!msg) return null;
+
+  const core = msg.viewOnceMessageV2?.message || msg;
+
+  const ctx =
+    core.extendedTextMessage?.contextInfo ||
+    core.imageMessage?.contextInfo ||
+    core.videoMessage?.contextInfo ||
+    core.documentMessage?.contextInfo ||
+    core.audioMessage?.contextInfo ||
+    core.contextInfo ||
+    null;
+
+  const lm = ctx?.quotedMessage?.locationMessage;
+  if (!lm) return null;
+
+  const lat = Number(lm.degreesLatitude);
+  const lng = Number(lm.degreesLongitude);
+
+  return {
+    kind: 'location',
+    lat, lng,
+    name: lm.name || null,
+    address: lm.address || null,
+    caption: lm.caption || null,
+    url: lm.url || `https://maps.google.com/?q=${lat},${lng}`,
+    _raw: lm,
+    _fromQuoted: true, // debug üçün
+  };
+}
+
 /* ---------------- routes ---------------- */
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -539,7 +572,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
     // 1) əvvəl location yoxla
-    const loc = getStaticLocation(env.msg);
+    const loc = getStaticLocation(env.msg) || getQuotedLocation(env.msg);
 
     if (loc) {
       const timestamp = formatBakuTimestamp();
@@ -552,6 +585,11 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
       const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
 
+      const locationTitle =
+  (loc.caption && loc.caption.trim()) ? loc.caption :
+  (loc.name && loc.name.trim()) ? loc.name :
+  '';
+
       // ✅ BACKEND/STOMP üçün newChat (location)
       const newChat = {
         id: Date.now(),
@@ -563,7 +601,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         messageType: "location",
         isReply: "false",
         userType: "customer",
-        message: loc.caption || loc.name || "",
+        message: locationTitle,
         timestamp,
         isCompleted: false,
         locationLat: loc.lat,
@@ -656,7 +694,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         return;
       }
     }
-
+  
     // ✅ BACKEND/STOMP newChat (text)
     const newChat = {
       id: Date.now(),
@@ -881,18 +919,19 @@ function shouldBlockMessage(raw) {
 
 async function isDuplicateChatMessage(messageText) {
   try {
-    // son mesajları götür (sürətli olsun deyə limit kiçik saxlayırıq)
     const res = await axios.get(`${TARGET_API_BASE}/api/chats`, { timeout: 15000 });
-    const list = Array.isArray(data?.messages) ? data.messages : [data?.message || data].filter(Boolean);
+
+    const data = res?.data; // ✅ əlavə et
+    const list = Array.isArray(data?.messages)
+      ? data.messages
+      : [data?.message || data].filter(Boolean);
 
     const needle = String(messageText || '').trim();
     if (!needle) return false;
 
-    // eyni “message” olan varsa dublikat say
     return list.some(c => String(c?.message || '').trim() === needle);
   } catch (e) {
     console.error('isDuplicateChatMessage error:', e?.response?.status, e?.response?.data || e.message);
-    // təhlükəsizlik üçün (servis çatmasa) dublikat saymayaq
     return false;
   }
 }
