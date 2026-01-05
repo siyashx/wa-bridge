@@ -12,6 +12,38 @@ function evoHeaders() {
   };
 }
 
+function buildReplyPayload({ chatJid, replyTo, quotedText }) {
+  if (!replyTo) return {};
+
+  // ✅ quoted mesaj DEST qrupda bizim göndərdiyimiz mesajdır => fromMe:true
+  const quoted = {
+    key: {
+      remoteJid: chatJid,
+      fromMe: true,
+      id: replyTo,
+      // participant QOYMA! (fromMe:true olanda lazım deyil, çox vaxt tap-to-open-i pozur)
+    },
+    message: {
+      conversation: quotedText || "",
+    },
+  };
+
+  const contextInfo = {
+    stanzaId: replyTo,
+    // participant QOYMA!
+  };
+
+  return {
+    // bəzi Evolution build-lər bunları istəyir (problem yaratmırsa saxla)
+    replyTo,
+    quotedMsgId: replyTo,
+    quotedMessageId: replyTo,
+
+    quoted,
+    contextInfo,
+  };
+}
+
 export async function sendText({ to, text, mentions, replyTo, quotedParticipant, quotedText }) {
   if (process.env.DRY_RUN) {
     return { success: true, msgId: "dry_run" };
@@ -25,31 +57,11 @@ export async function sendText({ to, text, mentions, replyTo, quotedParticipant,
 
   // ✅ Reply varsa: Evolution-un bəzi build-ləri quoted KEY+MESSAGE istəyir
   if (replyTo) {
-    // id-based field-lər
-    payload.replyTo = replyTo;
-    payload.quotedMsgId = replyTo;
-    payload.quotedMessageId = replyTo;
-
-    // ✅ ən vacib: quoted obyekti BAILEYS formatına yaxın veririk ki 400 olmasın
-    payload.quoted = {
-      key: {
-        remoteJid: to,
-        fromMe: false,
-        id: replyTo,
-        participant: quotedParticipant || undefined,
-      },
-      message: {
-        conversation: quotedText || "", // boş olsa da olar
-      },
-    };
-
-    // optional: bəzən contextInfo da kömək edir (amma quoted key artıq kifayət edir)
-    payload.contextInfo = {
-      stanzaId: replyTo,
-      participant: quotedParticipant || undefined,
-    };
-    Object.keys(payload.contextInfo).forEach(k => payload.contextInfo[k] === undefined && delete payload.contextInfo[k]);
-    if (!Object.keys(payload.contextInfo).length) delete payload.contextInfo;
+    Object.assign(payload, buildReplyPayload({
+      chatJid: to,
+      replyTo,
+      quotedText,
+    }));
   }
 
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -81,26 +93,9 @@ export async function sendLocation({ to, latitude, longitude, name, address, rep
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-  const baseQuoted = (replyTo ? {
-    replyTo,
-    quotedMsgId: replyTo,
-    quotedMessageId: replyTo,
-    quoted: {
-      key: {
-        remoteJid: to,
-        fromMe: false,
-        id: replyTo,
-        participant: quotedParticipant || undefined,
-      },
-      message: {
-        conversation: quotedText || "",
-      },
-    },
-    contextInfo: {
-      stanzaId: replyTo,
-      participant: quotedParticipant || undefined,
-    },
-  } : {});
+  const baseQuoted = replyTo
+    ? buildReplyPayload({ chatJid: to, replyTo, quotedText })
+    : {};
 
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
 
