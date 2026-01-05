@@ -18,13 +18,15 @@ export async function sendText({ to, text, mentions, replyTo }) {
   }
 
   const payload = {
-    number: to,              // group jid də ola bilər (xxx@g.us)
+    number: to,
     text: text || "",
-    // bəzi versiyalarda "mentions" qəbul edir; problem olsa silərik
     mentions,
-    // bəzi versiyalarda quoted/reply üçün "quoted" / "quotedMsgId" ola bilər
-    // səndəki forwardMap logic üçün replyTo saxlayırıq, alınmasa ignore edəcəyik
+
+    // ✅ Evolution variantları (hansı işləsə API özü götürəcək)
     replyTo,
+    quoted: replyTo,
+    quotedMsgId: replyTo,
+    quotedMessageId: replyTo,
   };
 
   Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
@@ -35,7 +37,6 @@ export async function sendText({ to, text, mentions, replyTo }) {
     { headers: evoHeaders(), timeout: 15000 }
   );
 
-  // mümkün msgId-lər:
   const msgId =
     res?.data?.key?.id ||
     res?.data?.messageId ||
@@ -45,7 +46,12 @@ export async function sendText({ to, text, mentions, replyTo }) {
   return { ...res.data, msgId };
 }
 
+
 export async function sendLocation({ to, latitude, longitude, name, address }) {
+  if (process.env.DRY_RUN) {
+    return { success: true, msgId: "dry_run" };
+  }
+
   const lat = Number(latitude);
   const lng = Number(longitude);
 
@@ -53,35 +59,54 @@ export async function sendLocation({ to, latitude, longitude, name, address }) {
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-  const title = (name && String(name).trim()) ? String(name).trim() : 'Konum';
+  const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
 
+  // ✅ müxtəlif schema-ları bir-bir sınayırıq
   const payloads = [
-    // ✅ variant 1 (çox API-lərdə belədir)
-    { number: to, latitude: lat, longitude: lng, name: title, address: address || undefined },
-
-    // ✅ variant 2 (sənin indiki kimi)
-    { to, latitude: lat, longitude: lng, name: title, address: address || undefined },
-
-    // ✅ variant 3 (bəzilərində lat/lng adları fərqlidir)
-    { number: to, lat, lng, title, address: address || undefined },
-
-    // ✅ variant 4
-    { chatId: to, latitude: lat, longitude: lng, name: title, address: address || undefined },
-  ];
+    { number: to, latitude: lat, longitude: lng, name: title, address },  // 1
+    { number: to, lat, lng, name: title, address },                       // 2
+    { to, latitude: lat, longitude: lng, name: title, address },          // 3
+    { chatId: to, latitude: lat, longitude: lng, name: title, address },  // 4
+  ].map(p => {
+    Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
+    return p;
+  });
 
   let lastErr;
+
   for (let i = 0; i < payloads.length; i++) {
+    const payload = payloads[i];
     try {
-      // burada sənin axios.post(...) çağırışın var
-      return await postLocation(payloads[i]); // <- sənin real endpoint çağırışın
+      const res = await axios.post(
+        `${EVO_BASE}/message/sendLocation/${INSTANCE}`,
+        payload,
+        { headers: evoHeaders(), timeout: 15000 }
+      );
+
+      const msgId =
+        res?.data?.key?.id ||
+        res?.data?.messageId ||
+        res?.data?.msgId ||
+        null;
+
+      return { ...res.data, msgId };
     } catch (e) {
       lastErr = e;
+
+      // ✅ 400 olsa növbəti payload sınayırıq
       const status = e?.response?.status;
-      // 400-də növbəti schema sınayaq, 401/403-də boşuna sınama
       if (status && status !== 400) throw e;
+
+      // debug üçün qısa log
+      console.error("sendLocation schema failed", {
+        i,
+        status,
+        data: e?.response?.data,
+      });
     }
   }
-  
+
+  // hamısı fail olsa
   throw lastErr;
 }
 

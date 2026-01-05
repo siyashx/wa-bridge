@@ -350,7 +350,7 @@ function normalizeEnvelope(data) {
     !!env?.key?.fromMe ||
     false;
 
-    // ✅ BUNU ƏLAVƏ ET — Evolution-da reply info çox vaxt buradadır
+  // ✅ BUNU ƏLAVƏ ET — Evolution-da reply info çox vaxt buradadır
   const contextInfo =
     env.contextInfo ||
     root.contextInfo ||
@@ -372,8 +372,11 @@ function normalizeEnvelope(data) {
     participant,
     id,
     fromMe,
+    contextInfo,        // ✅ əlavə et
+    messageTimestamp,   // ✅ əlavə et
     raw: env,
   };
+
 }
 
 // Webhook payload-dan mesaj vaxtını çıxar (ms)
@@ -395,7 +398,6 @@ function getMsgTsMs(env) {
 
   return n > 1e12 ? n : n * 1000;
 }
-
 
 function isTooOld(env, maxAgeMs) {
   const ts = getMsgTsMs(env);
@@ -566,7 +568,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     // reply mesajları istisna
     const quoted = extractQuotedFromEnv(env);
-const isReply = !!quoted;
+    const isReply = !!quoted;
 
     if (!isReply && isTooOld(env, MAX_AGE_MS)) {
       console.log('SKIP: too old');
@@ -588,8 +590,8 @@ const isReply = !!quoted;
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-// əvvəldə:
-const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
+    // əvvəldə:
+    const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
 
     if (loc) {
       const timestamp = formatBakuTimestamp();
@@ -603,9 +605,9 @@ const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
       const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
 
       const locationTitle =
-  (loc.caption && loc.caption.trim()) ? loc.caption :
-  (loc.name && loc.name.trim()) ? loc.name :
-  '';
+        (loc.caption && loc.caption.trim()) ? loc.caption :
+          (loc.name && loc.name.trim()) ? loc.name :
+            '';
 
       // ✅ BACKEND/STOMP üçün newChat (location)
       const newChat = {
@@ -711,7 +713,7 @@ const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
         return;
       }
     }
-  
+
     // ✅ BACKEND/STOMP newChat (text)
     const newChat = {
       id: Date.now(),
@@ -784,10 +786,11 @@ const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
         }));
 
         // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
-        if (!isReply) {
-          const msgId = resp?.msgId || resp?.data?.msgId;
-          if (msgId) forwardMapPut(env.remoteJid, env.id, jid, msgId);
+        const msgId = resp?.msgId || resp?.data?.msgId;
+        if (msgId) {
+          forwardMapPut(env.remoteJid, env.id, jid, msgId);
         }
+
       }
     } catch (e) {
       console.error('Forward (text) error:', e?.response?.data || e.message);
