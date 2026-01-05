@@ -688,8 +688,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
               replyTo,
               quotedMessage: destQuotedMessage || undefined,
               quotedText: quoted?.text || undefined,
-
-              participant: quoted?.participant || undefined,
             }));
 
             sentLocationMsgId = respLoc?.msgId || respLoc?.data?.msgId || null;
@@ -849,7 +847,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           replyTo,
           quotedText: quoted?.text || undefined,
           quotedMessage: destQuotedMessage || undefined, // ✅ əsas
-        participant: quoted?.participant || undefined,
         }));
 
         // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
