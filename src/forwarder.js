@@ -123,7 +123,7 @@ export async function sendLocation({
   replyTo,
   quotedText,
   quotedMessage,
-  quotedFromMe, // ✅ yeni
+  quotedFromMe,
 }) {
   if (process.env.DRY_RUN) return { success: true, msgId: "dry_run" };
 
@@ -134,29 +134,45 @@ export async function sendLocation({
   }
 
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
+  const addr = (address && String(address).trim()) ? String(address).trim() : undefined;
 
   const replyBundle = replyTo
     ? buildReplyBundle({
-      chatJid: to,
-      replyTo,
-      quotedText,
-      quotedMessage,
-      quotedFromMe,
-    })
+        chatJid: to,
+        replyTo,
+        quotedText,
+        quotedMessage,
+        quotedFromMe,
+      })
     : {};
 
-  // ✅ 2 variant: bəzi evolution build-lər latitude/longitude istəyir, bəziləri lat/lng
+  // ✅ 3 variant: fərqli Evolution build-lər fərqli schema istəyir
   const variants = [
     clean({
       number: to,
       latitude: lat,
       longitude: lng,
+      name: title,
+      address: addr,
       ...replyBundle,
     }),
     clean({
       number: to,
       lat,
       lng,
+      name: title,
+      address: addr,
+      ...replyBundle,
+    }),
+    // bəzi build-lər nested location qəbul edir:
+    clean({
+      number: to,
+      location: {
+        degreesLatitude: lat,
+        degreesLongitude: lng,
+        name: title,
+        address: addr,
+      },
       ...replyBundle,
     }),
   ];
@@ -174,19 +190,22 @@ export async function sendLocation({
       return { ...res.data, msgId };
     } catch (e) {
       lastErr = e;
-      const status = e?.response?.status;
 
       console.error("sendLocation failed", {
         i,
-        status,
+        status: e?.response?.status,
         payload: variants[i],
-        data: e?.response?.data,
+        // ✅ bunu da çıxart ki, Evolution nə tələb etdiyini görək:
+        evoMessage: e?.response?.data?.response?.message || e?.response?.data,
       });
 
+      // 400-dürsə növbəti varianta keçirik
+      const status = e?.response?.status;
       if (status && status !== 400) throw e;
     }
   }
 
   throw lastErr;
 }
+
 

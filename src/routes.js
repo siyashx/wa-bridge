@@ -48,11 +48,11 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       const phone = senderJid.replace('@s.whatsapp.net', '');
       const bridged = `${text}\n\n— ${phone}`;
 
-      // B qrupuna ötür
-      await sendText({
-        to: process.env.DEST_GROUP_JIDS,
-        text: bridged,
-      });
+      const targets = String(process.env.DEST_GROUP_JIDS || '').split(',').map(s => s.trim()).filter(Boolean);
+      for (const jid of targets) {
+        await sendText({ to: jid, text: bridged });
+      }
+
     }
   } catch (e) {
     console.error('Webhook error:', e?.response?.data || e.message);

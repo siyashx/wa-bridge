@@ -694,12 +694,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
               to: jid,
               latitude: effectiveLoc.lat,
               longitude: effectiveLoc.lng,
-              name: (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name.trim() : 'Konum',
+              name: effectiveLoc.name || effectiveLoc.caption || 'Konum',
               address: effectiveLoc.address || undefined,
-              quotedFromMe: destFromMe,
               replyTo,
               quotedMessage: destQuotedMessage || undefined,
               quotedText: quoted?.text || undefined,
+              quotedFromMe: destFromMe,
             }));
 
             sentLocationMsgId = respLoc?.msgId || respLoc?.data?.msgId || null;
