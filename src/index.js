@@ -960,46 +960,34 @@ async function fetchPushTargets(senderUserId = 0) {
   }
 }
 
-function shouldBlockMessage(raw) {
+function shouldBlockMessage(raw, isReply = false) {
   if (!raw) return false;
 
-  const text = String(raw).normalize('NFKC');   // diakritik normallaşdırma
+  const text = String(raw).normalize('NFKC');
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
-  // 1) Tam olaraq bu cavablar gəlsə → blokla
   const exactBlockSet = new Set([
-    'tapıldı',
-    'tapildi',
-    'verildi',
-    'verdim',
-    'hazır',
-    'hazir',
-    'hazirdi',
-    'hazırdır',
-    'hazirdir',
-    '✅',
-    '➕',
+    'tapıldı','tapildi','verildi','verdim',
+    'hazır','hazir','hazirdi','hazırdır','hazirdir',
+    '✅','➕',
   ]);
 
   if (exactBlockSet.has(lower)) return true;
 
-  // 2) Yalnız + işarələrindən ibarət mesajlar → blokla
+  // ✅ tək "+" yalnız reply DEYİLSƏ bloklansın
   if (!isReply && /^\s*\++\s*$/.test(text)) return true;
 
-  // 3) Ləğv / Legv / stop → blokla
   const cancelRe = /\b(l[əe]ğ?v|legv|stop)\b/i;
   if (cancelRe.test(text)) return true;
 
-  // 4) "tapildi/tapıldı" içində keçirsə (məsələn cümlə kimi)
   if (/\btap(i|ı)ld(i|ı)\b/i.test(text)) return true;
 
-  // 5) +994 ilə başlayan telefon nömrəsi varsa → blokla
   if (/\+994[\d\s-]{7,}/.test(lower)) return true;
 
-  // qalan hər şeyə icazə ver
   return false;
 }
+
 
 async function isDuplicateChatMessage(messageText) {
   try {
