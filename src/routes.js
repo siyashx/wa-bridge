@@ -20,7 +20,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     res.status(200).json({ received: true });
 
     const { event, data } = req.body || {};
-    if (event !== 'GROUPS_UPSERT') return;
+    if (event !== 'MESSAGES_UPSERT') return;
 
     const messages = data?.messages || [];
     for (const m of messages) {

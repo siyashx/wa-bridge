@@ -369,7 +369,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     const { event, data } = req.body || {};
 
-    const allowed = new Set(['GROUPS_UPSERT']);
+    const allowed = new Set(['MESSAGES_UPSERT']);
     if (!allowed.has(event)) return;
 
     const env = normalizeEnvelope(data);
