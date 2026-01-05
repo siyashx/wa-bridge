@@ -570,15 +570,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     const quoted = extractQuotedFromEnv(env);
     const isReply = !!quoted;
 
-    if (isReply) {
-      console.log("REPLY DEBUG", {
-        sourceQuotedStanzaId: quoted?.stanzaId,
-        destReplyTo: replyTo,
-        hasQuotedObj: !!quoted?.quotedMessage,
-        quotedKeys: quoted?.quotedMessage ? Object.keys(quoted.quotedMessage) : [],
-      });
-    }
-
     if (!isReply && isTooOld(env, MAX_AGE_MS)) {
       console.log('SKIP: too old');
       return;
@@ -682,15 +673,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
           }
 
-          if (isReply) {
-            console.log("REPLY DEBUG", {
-              sourceQuotedStanzaId: quoted?.stanzaId,
-              destReplyTo: replyTo || null,
-              quotedText: quoted?.text || null,
-              quotedParticipant: quoted?.participant || null,
-            });
-          }
-
           // ✅ sonra tail
           await enqueueSend(jid, () => sendText({
             to: jid,
@@ -784,6 +766,15 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         // ✅ Reply mesajdırsa: dest-dəki map olunmuş msgId-ni tap
         if (isReply && quoted?.stanzaId) {
           replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
+        }
+
+        if (isReply) {
+            console.log("REPLY DEBUG", {
+              sourceQuotedStanzaId: quoted?.stanzaId,
+              destReplyTo: replyTo || null,
+              quotedText: quoted?.text || null,
+              quotedParticipant: quoted?.participant || null,
+            });
         }
 
         let bridged = bridgedBase;
