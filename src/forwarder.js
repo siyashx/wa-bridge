@@ -1,10 +1,9 @@
 import axios from "axios";
 
 const EVO_BASE = process.env.EVOLUTION_API_BASE || "http://127.0.0.1:8080";
-const EVO_KEY = process.env.EVOLUTION_API_KEY;              // SALAM721721
+const EVO_KEY = process.env.EVOLUTION_API_KEY;
 const INSTANCE = process.env.EVOLUTION_INSTANCE || "default";
 
-// Evolution header adları bəzən "apikey" olur
 function evoHeaders() {
   return {
     apikey: EVO_KEY,
@@ -12,61 +11,67 @@ function evoHeaders() {
   };
 }
 
+/** Location/media üçün ən stabil reply forması: contextInfo */
+function buildReplyContext({ replyTo, quotedText, quotedMessage, participant }) {
+  if (!replyTo) return undefined;
+
+  const messageObj =
+    (quotedMessage && typeof quotedMessage === "object")
+      ? quotedMessage
+      : { conversation: quotedText || "" };
+
+  return clean({
+    stanzaId: replyTo,
+    participant: participant || undefined, // ✅ əlavə et
+    quotedMessage: messageObj,
+  });
+}
+
+/** Text üçün sənin əvvəlki reply variantın (qalsın) */
 function buildReplyPayload({ chatJid, replyTo, quotedText, quotedMessage }) {
   if (!replyTo) return {};
 
   const messageObj =
-    (quotedMessage && typeof quotedMessage === 'object')
+    (quotedMessage && typeof quotedMessage === "object")
       ? quotedMessage
       : { conversation: quotedText || "" };
 
-  // Variant-1: quoted (sendText-də yaxşı işləyir)
   const v1 = {
     replyTo,
     quotedMsgId: replyTo,
     quotedMessageId: replyTo,
     quoted: {
-      key: { remoteJid: chatJid, fromMe: true, id: replyTo },
+      key: { remoteJid: chatJid, fromMe: false, id: replyTo }, // ✅ false daha uyğundur
       message: messageObj,
     },
-    contextInfo: {
-      stanzaId: replyTo,
-      quotedMessage: messageObj, // ✅ əlavə et
-    },
-  };
 
-  // Variant-2: bəzi build-lərdə media/location üçün yalnız contextInfo işləyir
-  const v2 = {
-    replyTo,
     contextInfo: {
       stanzaId: replyTo,
       quotedMessage: messageObj,
     },
   };
 
-  return { v1, v2 };
+  return { v1 };
 }
 
-function cleanPayload(p) {
-  Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
-  if (p.contextInfo) {
-    Object.keys(p.contextInfo).forEach(k => p.contextInfo[k] === undefined && delete p.contextInfo[k]);
-    if (!Object.keys(p.contextInfo).length) delete p.contextInfo;
+function clean(obj) {
+  const o = { ...obj };
+  Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
+  if (o.contextInfo) {
+    Object.keys(o.contextInfo).forEach(k => o.contextInfo[k] === undefined && delete o.contextInfo[k]);
+    if (!Object.keys(o.contextInfo).length) delete o.contextInfo;
   }
-  if (p.quoted) {
-    // quoted.key/message içində undefined varsa sil
-    if (p.quoted?.key) Object.keys(p.quoted.key).forEach(k => p.quoted.key[k] === undefined && delete p.quoted.key[k]);
-    if (p.quoted?.message) Object.keys(p.quoted.message).forEach(k => p.quoted.message[k] === undefined && delete p.quoted.message[k]);
+  if (o.quoted) {
+    if (o.quoted?.key) Object.keys(o.quoted.key).forEach(k => o.quoted.key[k] === undefined && delete o.quoted.key[k]);
+    if (o.quoted?.message) Object.keys(o.quoted.message).forEach(k => o.quoted.message[k] === undefined && delete o.quoted.message[k]);
   }
-  return p;
+  return o;
 }
 
 export async function sendText({ to, text, mentions, replyTo, quotedText, quotedMessage }) {
-  if (process.env.DRY_RUN) {
-    return { success: true, msgId: "dry_run" };
-  }
+  if (process.env.DRY_RUN) return { success: true, msgId: "dry_run" };
 
-  const payload = {
+  let payload = {
     number: to,
     text: text || "",
     mentions,
@@ -74,27 +79,33 @@ export async function sendText({ to, text, mentions, replyTo, quotedText, quoted
 
   if (replyTo) {
     const { v1 } = buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage });
-    Object.assign(payload, v1);
+    payload = { ...payload, ...v1 };
   }
 
-  Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+  payload = clean(payload);
 
   const res = await axios.post(
     `${EVO_BASE}/message/sendText/${INSTANCE}`,
     payload,
-    { headers: evoHeaders(), timeout: 15000 }
+    { headers: evoHeaders(), timeout: 30000 }
   );
 
-  const msgId =
-    res?.data?.key?.id ||
-    res?.data?.messageId ||
-    res?.data?.msgId ||
-    null;
-
+  const msgId = res?.data?.key?.id || res?.data?.messageId || res?.data?.msgId || null;
   return { ...res.data, msgId };
 }
 
-export async function sendLocation({ to, latitude, longitude, name, address, replyTo, quotedText, quotedMessage }) {
+export async function sendLocation({
+  to,
+  latitude,
+  longitude,
+  name,
+  address,
+  replyTo,
+  quotedText,
+  quotedMessage,
+  participant       // ✅ BURANI ƏLAVƏ ET
+}) {
+
   if (process.env.DRY_RUN) return { success: true, msgId: "dry_run" };
 
   const lat = Number(latitude);
@@ -103,55 +114,55 @@ export async function sendLocation({ to, latitude, longitude, name, address, rep
     throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-  // ✅ 1) əvvəl title
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
+  const contextInfo = replyTo
+    ? buildReplyContext({ replyTo, quotedText, quotedMessage, participant })
+    : undefined;
 
-  // ✅ 2) sonra replyPack
-  const replyPack = replyTo
-    ? buildReplyPayload({ chatJid: to, replyTo, quotedText, quotedMessage })
-    : null;
-
-  // ✅ 3) sonra payloads
-  const payloads = [
-    // v1
-    { number: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
-    { number: to, lat, lng, name: title, address, ...(replyPack?.v1 || {}) },
-    { to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
-    { chatId: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v1 || {}) },
-
-    // v2
-    { number: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
-    { number: to, lat, lng, name: title, address, ...(replyPack?.v2 || {}) },
-    { to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
-    { chatId: to, latitude: lat, longitude: lng, name: title, address, ...(replyPack?.v2 || {}) },
-  ].map(cleanPayload);
+  // ✅ 2 variant: bəzi evolution build-lər latitude/longitude istəyir, bəziləri lat/lng
+  const variants = [
+    clean({
+      number: to,
+      latitude: lat,
+      longitude: lng,
+      name: title,
+      address: address || undefined,
+      contextInfo,
+    }),
+    clean({
+      number: to,
+      lat,
+      lng,
+      name: title,
+      address: address || undefined,
+      contextInfo,
+    }),
+  ];
 
   let lastErr;
-
-  for (let i = 0; i < payloads.length; i++) {
-    const payload = payloads[i];
+  for (let i = 0; i < variants.length; i++) {
     try {
       const res = await axios.post(
         `${EVO_BASE}/message/sendLocation/${INSTANCE}`,
-        payload,
-        { headers: evoHeaders(), timeout: 15000 }
+        variants[i],
+        { headers: evoHeaders(), timeout: 60000 }
       );
-
-      console.error("sendLocation schema failed", {
-        i,
-        status,
-        payload,                // ✅ bunu əlavə et
-        data: e?.response?.data
-      });
 
       const msgId = res?.data?.key?.id || res?.data?.messageId || res?.data?.msgId || null;
       return { ...res.data, msgId };
     } catch (e) {
       lastErr = e;
       const status = e?.response?.status;
-      if (status && status !== 400) throw e;
 
-      console.error("sendLocation schema failed", { i, status, data: e?.response?.data });
+      console.error("sendLocation failed", {
+        i,
+        status,
+        payload: variants[i],
+        data: e?.response?.data,
+      });
+
+      // 400 olarsa digər variantı yoxla; 400 deyilsə dərhal at
+      if (status && status !== 400) throw e;
     }
   }
 

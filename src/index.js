@@ -60,8 +60,11 @@ function expBackoff(attempt) {
 }
 
 function isRetryableError(e) {
+  // axios timeout -> çox vaxt göndərilib, sadəcə cavab gecikib
+  if (e?.code === 'ECONNABORTED') return false;
+
   const status = e?.response?.status;
-  if (!status) return true;              // network/timeout
+  if (!status) return true;              // digər network error
   if (status === 429 || status === 408) return true;
   if (status >= 500 && status <= 599) return true;
   return false;
@@ -591,10 +594,13 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-    // ✅ yalnız mesajın özündə location varsa
     const selfLoc = getStaticLocation(env.msg);
+    const quotedLoc = getQuotedLocationFromEnv(env); // ✅ quoted location
 
-    if (selfLoc) {
+    // Əgər mesaj özü location deyilsə, amma reply etdiyi mesaj location-dursa
+    const effectiveLoc = selfLoc || quotedLoc;
+
+    if (effectiveLoc) {
       const timestamp = formatBakuTimestamp();
 
       const normalizedPhone =
@@ -606,8 +612,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
 
       const locationTitle =
-        (selfLoc.caption && selfLoc.caption.trim()) ? selfLoc.caption :
-          (selfLoc.name && selfLoc.name.trim()) ? selfLoc.name :
+        (effectiveLoc.caption && effectiveLoc.caption.trim()) ? effectiveLoc.caption :
+          (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name :
             '';
 
       // ✅ BACKEND/STOMP üçün newChat (location)
@@ -624,9 +630,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         message: locationTitle,
         timestamp,
         isCompleted: false,
-        locationLat: selfLoc.lat,
-        locationLng: selfLoc.lng,
-        thumbnail: selfLoc._raw?.jpegThumbnail || null
+        locationLat: effectiveLoc.lat,
+        locationLng: effectiveLoc.lng,
+        thumbnail: effectiveLoc._raw?.jpegThumbnail || null
       };
 
       // ✅ STOMP publish
@@ -640,7 +646,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       try {
         const preview = (newChat.message && newChat.message.trim())
           ? newChat.message.slice(0, 140)
-          : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
+          : `${effectiveLoc.lat.toFixed(6)}, ${effectiveLoc.lng.toFixed(6)}`;
 
         const oneSignalIds = await fetchPushTargets(0);
         if (oneSignalIds.length) {
@@ -669,55 +675,67 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             destQuotedMessage = rec?.quotedMessage || null;
           }
 
-          const respLoc = await enqueueSend(jid, () => sendLocation({
-            to: jid,
-            latitude: selfLoc.lat,
-            longitude: selfLoc.lng,
-            name: selfLoc.name || (newChat.message?.trim() || 'Konum'),
-            address: selfLoc.address || undefined,
+          let sentLocationMsgId = null;
 
-            replyTo,
-            quotedMessage: destQuotedMessage || undefined,
-            quotedText: quoted?.text || undefined,
-          }));
+          try {
+            const respLoc = await enqueueSend(jid, () => sendLocation({
+              to: jid,
+              latitude: effectiveLoc.lat,
+              longitude: effectiveLoc.lng,
+              name: (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name.trim() : 'Konum',
+              address: effectiveLoc.address || undefined,
 
-          
+              replyTo,
+              quotedMessage: destQuotedMessage || undefined,
+              quotedText: quoted?.text || undefined,
+            }));
 
-          console.log("SEND LOC DEBUG", {
-            to: jid,
-            isReply,
-            replyTo,
-            hasQuotedMessage: !!destQuotedMessage,
-            title: (selfLoc.name || newChat.message || '').slice(0, 60),
-          });
+            sentLocationMsgId = respLoc?.msgId || respLoc?.data?.msgId || null;
 
-          const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
-          if (msgIdLoc) {
-            const quotedMessageForDest = {
-              locationMessage: {
-                degreesLatitude: selfLoc.lat,
-                degreesLongitude: selfLoc.lng,
-                name: selfLoc.name || undefined,
-                address: selfLoc.address || undefined,
-                jpegThumbnail: selfLoc._raw?.jpegThumbnail || undefined,
-              },
-            };
-            Object.keys(quotedMessageForDest.locationMessage).forEach(k => {
-              if (quotedMessageForDest.locationMessage[k] === undefined) delete quotedMessageForDest.locationMessage[k];
-            });
+            // ✅ mapping (reply üçün lazımdır)
+            if (sentLocationMsgId) {
+              const quotedMessageForDest = {
+                locationMessage: {
+                  degreesLatitude: effectiveLoc.lat,
+                  degreesLongitude: effectiveLoc.lng,
+                  name: effectiveLoc.name || undefined,
+                  address: effectiveLoc.address || undefined,
+                  jpegThumbnail: effectiveLoc._raw?.jpegThumbnail || undefined,
+                },
+              };
+              Object.keys(quotedMessageForDest.locationMessage).forEach(k => {
+                if (quotedMessageForDest.locationMessage[k] === undefined) delete quotedMessageForDest.locationMessage[k];
+              });
 
-            forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc, quotedMessageForDest);
+              forwardMapPut(env.remoteJid, env.id, jid, sentLocationMsgId, quotedMessageForDest);
+            }
+
+          } catch (err) {
+            // ✅ Location endpoint 400 verirsə, heç olmasa TEXT fallback göndər
+            console.error('sendLocation failed -> fallback to text', err?.response?.data || err?.message);
+
+            const maps = `https://maps.google.com/?q=${effectiveLoc.lat},${effectiveLoc.lng}`;
+            const fallbackText =
+              `📍 Lokasiya: ${effectiveLoc.name || ''}\n${effectiveLoc.address || ''}\n${maps}`.trim();
+
+            await enqueueSend(jid, () => sendText({
+              to: jid,
+              text: fallbackText,
+              replyTo,
+              quotedText: quoted?.text || undefined,
+              quotedMessage: destQuotedMessage || undefined,
+            }));
           }
 
+          // ✅ Tail: reply DEYİLSƏ həmişə göndər (location uğurlu da olsa, fallback da olsa)
           if (!isReply) {
             await enqueueSend(jid, () => sendText({
               to: jid,
-              text: (typeof SUB_ONLY_DEST_JID !== 'undefined' && jid === SUB_ONLY_DEST_JID)
-                ? SUB_ONLY_TAIL
-                : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`
+              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`
             }));
           }
         }
+
       } catch (e) {
         console.error('Forward (location) error:', e?.response?.data || e.message);
       }
@@ -820,11 +838,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
         // ✅ Reply deyil → tail əlavə et (sub-only logic)
         if (!isReply) {
-          if (typeof SUB_ONLY_DEST_JID !== 'undefined' && jid === SUB_ONLY_DEST_JID) {
-            bridged = `${bridged}\n\n${SUB_ONLY_TAIL}`;
-          } else {
-            bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-          }
+          bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
         }
 
         const resp = await enqueueSend(jid, () => sendText({
@@ -1025,7 +1039,7 @@ function extractQuotedFromEnv(env) {
   return {
     text: qt,
     participant: ctx?.participant || null,
-    stanzaId: ctx?.stanzaId || null,    // quoted msg id (incoming)
+    stanzaId: ctx?.stanzaId || ctx?.quotedMessageId || ctx?.quotedMsgId || null,    // quoted msg id (incoming)
     quotedMessage: q,                   // ✅ ƏN VACİB: obyektin özü
     _rawCtx: ctx,
   };
@@ -1050,18 +1064,6 @@ function getQuotedLocationFromEnv(env) {
     _raw: lm,
     _fromQuoted: true,
   };
-}
-
-function isReplyMessage(msg) {
-  return !!extractQuoted(msg);
-}
-
-// UI/forward üçün quote formatı
-function formatQuoteBlock(q) {
-  if (!q?.text) return null;
-  // WhatsApp üslubu kimi ">" ilə
-  const lines = String(q.text).split('\n').map(l => `> ${l}`).join('\n');
-  return lines;
 }
 
 /* ---------------- STOMP (WebSocket) client ---------------- */
