@@ -627,48 +627,40 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name :
             '';
 
-      // ✅ BACKEND/STOMP üçün newChat (location)
-      const newChat = {
-        id: Date.now(),
-        groupId: "0",
-        userId: 2,
-        username: "Sifariş Qrupu İstifadəçisi",
-        phone: phonePrefixed,
-        isSeenIds: [],
-        messageType: "location",
-        isReply: "false",
-        userType: "customer",
-        message: locationTitle,
-        timestamp,
-        isCompleted: false,
-        locationLat: effectiveLoc.lat,
-        locationLng: effectiveLoc.lng,
-        thumbnail: effectiveLoc._raw?.jpegThumbnail || null
-      };
+      // ✅ Reply mesajlar BACKEND/STOMP-ə getməsin
+      if (isReply) {
+        console.log('SKIP BACKEND/STOMP (location): reply message');
+      } else {
+        // ✅ BACKEND/STOMP üçün newChat (location)
+        const newChat = {
+          id: Date.now(),
+          groupId: "0",
+          userId: 2,
+          username: "Sifariş Qrupu İstifadəçisi",
+          phone: phonePrefixed,
+          isSeenIds: [],
+          messageType: "location",
+          isReply: "false",
+          userType: "customer",
+          message: locationTitle,
+          timestamp,
+          isCompleted: false,
+          locationLat: effectiveLoc.lat,
+          locationLng: effectiveLoc.lng,
+          thumbnail: effectiveLoc._raw?.jpegThumbnail || null
+        };
 
-      // ✅ STOMP publish
-      try {
-        publishStomp('/app/sendChatMessage', newChat);
-      } catch (e) {
-        console.error('STOMP publish error (location):', e?.message);
-      }
+        try { publishStomp('/app/sendChatMessage', newChat); } catch (e) { }
+        try {
+          const oneSignalIds = await fetchPushTargets(0);
+          if (oneSignalIds.length) {
+            const preview = (newChat.message && newChat.message.trim())
+              ? newChat.message.slice(0, 140)
+              : `${effectiveLoc.lat.toFixed(6)}, ${effectiveLoc.lng.toFixed(6)}`;
 
-      // ✅ OneSignal push
-      try {
-        const preview = (newChat.message && newChat.message.trim())
-          ? newChat.message.slice(0, 140)
-          : `${effectiveLoc.lat.toFixed(6)}, ${effectiveLoc.lng.toFixed(6)}`;
-
-        const oneSignalIds = await fetchPushTargets(0);
-        if (oneSignalIds.length) {
-          await sendPushNotification(
-            oneSignalIds,
-            '🪄🪄 Yeni Sifariş!!',
-            `📍 ${preview}`
-          );
-        }
-      } catch (pushErr) {
-        console.error('Post-publish push error (location):', pushErr?.message);
+            await sendPushNotification(oneSignalIds, '🪄🪄 Yeni Sifariş!!', `📍 ${preview}`);
+          }
+        } catch (e) { }
       }
 
       // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL location forward + mapping
@@ -770,42 +762,36 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       }
     }
 
-    // ✅ BACKEND/STOMP newChat (text)
-    const newChat = {
-      id: Date.now(),
-      groupId: "0",
-      userId: 2,
-      username: 'Sifariş Qrupu İstifadəçisi',
-      phone: normalizedPhone,
-      isSeenIds: [],
-      messageType: "text",
-      isReply: "false",
-      userType: "customer",
-      message: cleanMessage,
-      timestamp,
-      isCompleted: false,
-    };
+    // ✅ Reply mesajlar BACKEND/STOMP-ə getməsin
+    if (isReply) {
+      console.log('SKIP BACKEND/STOMP (text): reply message');
+    } else {
+      // ✅ BACKEND/STOMP newChat (text)
+      const newChat = {
+        id: Date.now(),
+        groupId: "0",
+        userId: 2,
+        username: 'Sifariş Qrupu İstifadəçisi',
+        phone: normalizedPhone,
+        isSeenIds: [],
+        messageType: "text",
+        isReply: "false",
+        userType: "customer",
+        message: cleanMessage,
+        timestamp,
+        isCompleted: false,
+      };
 
-    // ✅ STOMP publish
-    try {
-      publishStomp('/app/sendChatMessage', newChat);
-    } catch (e) {
-      console.error('STOMP publish error (text):', e?.message);
-    }
+      try { publishStomp('/app/sendChatMessage', newChat); } catch (e) { }
 
-    // ✅ OneSignal push
-    try {
-      const oneSignalIds = await fetchPushTargets(0);
-      if (oneSignalIds.length) {
-        const preview = (cleanMessage || '').slice(0, 140);
-        await sendPushNotification(
-          oneSignalIds,
-          '🪄🪄 Yeni Sifariş!!',
-          `📩 ${preview}`
-        );
-      }
-    } catch (pushErr) {
-      console.error('Post-publish push error (text):', pushErr?.message);
+      // ✅ OneSignal push (yalnız non-reply)
+      try {
+        const oneSignalIds = await fetchPushTargets(0);
+        if (oneSignalIds.length) {
+          const preview = (cleanMessage || '').slice(0, 140);
+          await sendPushNotification(oneSignalIds, '🪄🪄 Yeni Sifariş!!', `📩 ${preview}`);
+        }
+      } catch (e) { }
     }
 
     // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (replyTo + map)
@@ -968,9 +954,9 @@ function shouldBlockMessage(raw, isReply = false) {
   const lower = trimmed.toLowerCase();
 
   const exactBlockSet = new Set([
-    'tapıldı','tapildi','verildi','verdim',
-    'hazır','hazir','hazirdi','hazırdır','hazirdir',
-    '✅','➕',
+    'tapıldı', 'tapildi', 'verildi', 'verdim',
+    'hazır', 'hazir', 'hazirdi', 'hazırdır', 'hazirdir',
+    '✅', '➕',
   ]);
 
   if (exactBlockSet.has(lower)) return true;
@@ -987,7 +973,6 @@ function shouldBlockMessage(raw, isReply = false) {
 
   return false;
 }
-
 
 async function isDuplicateChatMessage(messageText) {
   try {
