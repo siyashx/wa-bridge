@@ -46,35 +46,42 @@ export async function sendText({ to, text, mentions, replyTo }) {
 }
 
 export async function sendLocation({ to, latitude, longitude, name, address }) {
-  if (process.env.DRY_RUN) {
-    return { success: true, msgId: "dry_run" };
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error(`Invalid lat/lng: ${latitude}, ${longitude}`);
   }
 
-  const payload = {
-    number: to,
-    // Evolution-də adətən bu struktur işləyir:
-    location: {
-      degreesLatitude: Number(latitude),
-      degreesLongitude: Number(longitude),
-      name: name || undefined,
-      address: address || undefined,
-    },
-  };
+  const title = (name && String(name).trim()) ? String(name).trim() : 'Konum';
 
-  // bəzən caption/text də istəyir
-  if (name || address) payload.text = name || address;
+  const payloads = [
+    // ✅ variant 1 (çox API-lərdə belədir)
+    { number: to, latitude: lat, longitude: lng, name: title, address: address || undefined },
 
-  const res = await axios.post(
-    `${EVO_BASE}/message/sendLocation/${INSTANCE}`,
-    payload,
-    { headers: evoHeaders(), timeout: 15000 }
-  );
+    // ✅ variant 2 (sənin indiki kimi)
+    { to, latitude: lat, longitude: lng, name: title, address: address || undefined },
 
-  const msgId =
-    res?.data?.key?.id ||
-    res?.data?.messageId ||
-    res?.data?.msgId ||
-    null;
+    // ✅ variant 3 (bəzilərində lat/lng adları fərqlidir)
+    { number: to, lat, lng, title, address: address || undefined },
 
-  return { ...res.data, msgId };
+    // ✅ variant 4
+    { chatId: to, latitude: lat, longitude: lng, name: title, address: address || undefined },
+  ];
+
+  let lastErr;
+  for (let i = 0; i < payloads.length; i++) {
+    try {
+      // burada sənin axios.post(...) çağırışın var
+      return await postLocation(payloads[i]); // <- sənin real endpoint çağırışın
+    } catch (e) {
+      lastErr = e;
+      const status = e?.response?.status;
+      // 400-də növbəti schema sınayaq, 401/403-də boşuna sınama
+      if (status && status !== 400) throw e;
+    }
+  }
+  
+  throw lastErr;
 }
+

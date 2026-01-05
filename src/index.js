@@ -350,6 +350,21 @@ function normalizeEnvelope(data) {
     !!env?.key?.fromMe ||
     false;
 
+    // ✅ BUNU ƏLAVƏ ET — Evolution-da reply info çox vaxt buradadır
+  const contextInfo =
+    env.contextInfo ||
+    root.contextInfo ||
+    msg.contextInfo ||
+    root.message?.contextInfo ||
+    null;
+
+  // ✅ timestamp da bəzən env-də olur
+  const messageTimestamp =
+    env.messageTimestamp ||
+    root.messageTimestamp ||
+    msg.messageTimestamp ||
+    null;
+
   return {
     key,
     msg,
@@ -365,9 +380,11 @@ function normalizeEnvelope(data) {
 function getMsgTsMs(env) {
   const raw =
     env?.raw?.messageTimestampMs ??
-    env?.raw?.messageTimestamp ??
-    env?.raw?.timestamp ??
+    env?.raw?.messageTimestamp ??        // ✅ əlavə et
+    env?.messageTimestamp ??             // ✅ əlavə et (normalizeEnvelope-dən)
+    env?.raw?.message?.messageTimestamp ??
     env?.msg?.messageTimestamp ??
+    env?.raw?.timestamp ??
     env?.msg?.timestamp ??
     null;
 
@@ -376,9 +393,9 @@ function getMsgTsMs(env) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
 
-  // saniyə / millisecond normalize
   return n > 1e12 ? n : n * 1000;
 }
+
 
 function isTooOld(env, maxAgeMs) {
   const ts = getMsgTsMs(env);
@@ -548,8 +565,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
     // reply mesajları istisna
-    const quoted = extractQuoted(env.msg);
-    const isReply = !!quoted;
+    const quoted = extractQuotedFromEnv(env);
+const isReply = !!quoted;
 
     if (!isReply && isTooOld(env, MAX_AGE_MS)) {
       console.log('SKIP: too old');
@@ -571,8 +588,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
-    // 1) əvvəl location yoxla
-    const loc = getStaticLocation(env.msg) || getQuotedLocation(env.msg);
+// əvvəldə:
+const loc = getStaticLocation(env.msg) || getQuotedLocationFromEnv(env);
 
     if (loc) {
       const timestamp = formatBakuTimestamp();
@@ -936,25 +953,11 @@ async function isDuplicateChatMessage(messageText) {
   }
 }
 
-// Reply/Quoted message çıxar
-function extractQuoted(msg) {
-  if (!msg) return null;
-
-  const core = msg.viewOnceMessageV2?.message || msg;
-
-  // reply adətən extendedTextMessage.contextInfo içində olur
-  const ctx =
-    core.extendedTextMessage?.contextInfo ||
-    core.imageMessage?.contextInfo ||
-    core.videoMessage?.contextInfo ||
-    core.documentMessage?.contextInfo ||
-    core.audioMessage?.contextInfo ||
-    null;
-
+function extractQuotedFromEnv(env) {
+  const ctx = env?.contextInfo || null;
   const q = ctx?.quotedMessage;
   if (!q) return null;
 
-  // quoted mətni tapmağa çalış
   const qt =
     q.conversation ||
     q.extendedTextMessage?.text ||
@@ -962,17 +965,35 @@ function extractQuoted(msg) {
     q.videoMessage?.caption ||
     q.documentMessage?.caption ||
     q.documentMessage?.fileName ||
-    q.audioMessage?.ptt && '[voice]' ||
+    (q.audioMessage?.ptt ? '[voice]' : null) ||
     null;
-
-  // quoted göndərənin jid-i (bəzən ctx.participant)
-  const quotedParticipant = ctx?.participant || null;
 
   return {
     text: qt,
-    participant: quotedParticipant,
-    stanzaId: ctx?.stanzaId || null,
+    participant: ctx?.participant || null,
+    stanzaId: ctx?.stanzaId || null,  // ✅ replyTo üçün ən vacib budur
     _raw: q,
+  };
+}
+
+function getQuotedLocationFromEnv(env) {
+  const ctx = env?.contextInfo || null;
+  const lm = ctx?.quotedMessage?.locationMessage;
+  if (!lm) return null;
+
+  const lat = Number(lm.degreesLatitude);
+  const lng = Number(lm.degreesLongitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  return {
+    kind: 'location',
+    lat, lng,
+    name: lm.name || null,
+    address: lm.address || null,
+    caption: lm.caption || null,
+    url: lm.url || `https://maps.google.com/?q=${lat},${lng}`,
+    _raw: lm,
+    _fromQuoted: true,
   };
 }
 
