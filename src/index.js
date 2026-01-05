@@ -30,8 +30,6 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
-// xüsusi abonə mesajı olan qrup
-const SUB_ONLY_DEST_JID = '120363424109826549@g.us';
 const SUB_ONLY_TAIL = 'Sifarişi qəbul etmək üçün aylıq abunə haqqı ödəməlisiniz ✅ 5 AZN';
 
 /* ---------------- WA send queue (reliable) ---------------- */
@@ -476,9 +474,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
             // ✅ sonra tail mesajını da göndər
             await enqueueSend(jid, () => sendText({
               to: jid,
-              text: (jid === SUB_ONLY_DEST_JID)
-                ? SUB_ONLY_TAIL
-                : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
+              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed}`
             }));
           }
 
@@ -556,13 +552,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           let bridged = bridgedBase;
 
           if (!isReply) {
-            if (jid === SUB_ONLY_DEST_JID) {
-              // ✅ burada nömrə GÖRÜNMƏSİN, yalnız abonə yazısı olsun
-              bridged = `${bridged}\n\n${SUB_ONLY_TAIL}`;
-            } else {
-              // digər dest-lərdə köhnə qayda (nömrə)
-              bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-            }
+            // digər dest-lərdə köhnə qayda (nömrə)
+            bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
+
           }
 
           const resp = await enqueueSend(jid, () => sendText({
