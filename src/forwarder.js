@@ -1,4 +1,3 @@
-// forwarder.js
 import axios from "axios";
 
 const EVO_BASE = process.env.EVOLUTION_API_BASE || "http://127.0.0.1:8080";
@@ -13,64 +12,97 @@ function evoHeaders() {
 }
 
 function clean(obj) {
+  if (!obj || typeof obj !== "object") return obj;
   const o = { ...obj };
-  Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
+  Object.keys(o).forEach((k) => o[k] === undefined && delete o[k]);
 
   if (o.contextInfo) {
-    Object.keys(o.contextInfo).forEach(k => o.contextInfo[k] === undefined && delete o.contextInfo[k]);
+    Object.keys(o.contextInfo).forEach((k) => o.contextInfo[k] === undefined && delete o.contextInfo[k]);
     if (!Object.keys(o.contextInfo).length) delete o.contextInfo;
   }
 
   if (o.quoted) {
-    if (o.quoted?.key) Object.keys(o.quoted.key).forEach(k => o.quoted.key[k] === undefined && delete o.quoted.key[k]);
-    if (o.quoted?.message) Object.keys(o.quoted.message).forEach(k => o.quoted.message[k] === undefined && delete o.quoted.message[k]);
-    if (!Object.keys(o.quoted.key || {}).length) delete o.quoted;
+    if (o.quoted?.key) Object.keys(o.quoted.key).forEach((k) => o.quoted.key[k] === undefined && delete o.quoted.key[k]);
+    if (o.quoted?.message) Object.keys(o.quoted.message).forEach((k) => o.quoted.message[k] === undefined && delete o.quoted.message[k]);
   }
 
   return o;
 }
 
-/**
- * ✅ Reply üçün ən stabil: contextInfo + quoted (baileys-vari)
- * QAYDA:
- * - stanzaId = replyTo (dest msg id)
- * - participant göndərmə (çünki dest-də quoted mesaj botundur, mismatch olur)
- * - quoted.key.fromMe = true (çünki dest-də msg botdan gedib)
- */
-function buildReplyBits({ chatJid, replyTo, quotedText, quotedMessage }) {
-  if (!replyTo) return {};
-
-  const messageObj =
-    (quotedMessage && typeof quotedMessage === "object")
-      ? quotedMessage
-      : { conversation: quotedText || "" };
-
-  return clean({
-    contextInfo: {
-      stanzaId: replyTo,
-      quotedMessage: messageObj,
-      // ❌ participant BURDA YOXDUR — mismatch bug-un kökü bu idi
-    },
-    quoted: {
-      key: {
-        remoteJid: chatJid,
-        fromMe: true,      // ✅ dest-də quoted msg sənin botundur
-        id: replyTo,
-      },
-      message: messageObj,
-    },
-  });
+function buildQuotedMessageObj({ quotedText, quotedMessage }) {
+  if (quotedMessage && typeof quotedMessage === "object") return quotedMessage;
+  return { conversation: quotedText || "" };
 }
 
-export async function sendText({ to, text, mentions, replyTo, quotedText, quotedMessage }) {
+/**
+ * ✅ Reply builder (stabil):
+ * - quoted.key.fromMe: true (çünki dest-də forwarded msg sənin botundur)
+ * - participant yalnız fromMe=false olarsa ver (bizdə lazım deyil)
+ */
+function buildReplyBundle({
+  chatJid,
+  replyTo,
+  quotedText,
+  quotedMessage,
+  quotedFromMe = true, // ✅ default TRUE
+}) {
+  if (!replyTo) return {};
+
+  const messageObj = buildQuotedMessageObj({ quotedText, quotedMessage });
+
+  const quotedKey = clean({
+    remoteJid: chatJid,
+    id: replyTo,
+    fromMe: !!quotedFromMe, // ✅ ƏSAS FIX
+    // participant: ... (fromMe true olanda göndərmirik)
+  });
+
+  const bundle = {
+    quoted: {
+      key: quotedKey,
+      message: messageObj,
+    },
+    contextInfo: clean({
+      stanzaId: replyTo,
+      quotedMessage: messageObj,
+      // participant: ... (fromMe true olanda göndərmirik)
+    }),
+  };
+
+  return clean(bundle);
+}
+
+export async function sendText({
+  to,
+  text,
+  mentions,
+  replyTo,
+  quotedText,
+  quotedMessage,
+  quotedFromMe, // ✅ yeni
+}) {
   if (process.env.DRY_RUN) return { success: true, msgId: "dry_run" };
 
-  let payload = clean({
+  let payload = {
     number: to,
     text: text || "",
     mentions,
-    ...buildReplyBits({ chatJid: to, replyTo, quotedText, quotedMessage }),
-  });
+  };
+
+  if (replyTo) {
+    payload = {
+      ...payload,
+      ...buildReplyBundle({
+        chatJid: to,
+        replyTo,
+        quotedText,
+        quotedMessage,
+        quotedFromMe,
+      }),
+    };
+  }
+
+  payload = clean(payload);
 
   const res = await axios.post(
     `${EVO_BASE}/message/sendText/${INSTANCE}`,
@@ -91,6 +123,7 @@ export async function sendLocation({
   replyTo,
   quotedText,
   quotedMessage,
+  quotedFromMe, // ✅ yeni
 }) {
   if (process.env.DRY_RUN) return { success: true, msgId: "dry_run" };
 
@@ -102,9 +135,17 @@ export async function sendLocation({
 
   const title = (name && String(name).trim()) ? String(name).trim() : "Konum";
 
-  const replyBits = buildReplyBits({ chatJid: to, replyTo, quotedText, quotedMessage });
+  const replyBundle = replyTo
+    ? buildReplyBundle({
+        chatJid: to,
+        replyTo,
+        quotedText,
+        quotedMessage,
+        quotedFromMe,
+      })
+    : {};
 
-  // bəzi evolution build-lər latitude/longitude, bəziləri lat/lng istəyir
+  // ✅ 2 variant: bəzi evolution build-lər latitude/longitude istəyir, bəziləri lat/lng
   const variants = [
     clean({
       number: to,
@@ -112,7 +153,7 @@ export async function sendLocation({
       longitude: lng,
       name: title,
       address: address || undefined,
-      ...replyBits,
+      ...replyBundle,
     }),
     clean({
       number: to,
@@ -120,7 +161,7 @@ export async function sendLocation({
       lng,
       name: title,
       address: address || undefined,
-      ...replyBits,
+      ...replyBundle,
     }),
   ];
 

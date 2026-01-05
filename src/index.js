@@ -164,7 +164,10 @@ function forwardMapPut(sourceGroupJid, sourceMsgId, destJid, msgId, quotedMessag
 
   const cur = forwardMap.get(key) || { ts: now, dest: {} };
   cur.ts = now;
-  cur.dest[destJid] = { msgId, quotedMessage: quotedMessage || null };
+
+  // ✅ B-də bu mesajı bot göndərir → fromMe true
+  cur.dest[destJid] = { msgId, quotedMessage: quotedMessage || null, fromMe: true };
+
   forwardMap.set(key, cur);
 
   if (forwardMap.size > 20000) {
@@ -184,7 +187,7 @@ function forwardMapGetRec(sourceGroupJid, sourceMsgId, destJid) {
     forwardMap.delete(key);
     return null;
   }
-  return rec.dest?.[destJid] || null; // {msgId, quotedMessage}
+  return rec.dest?.[destJid] || null; // {msgId, quotedMessage, fromMe}
 }
 
 /* ---------------- helpers ---------------- */
@@ -594,13 +597,19 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
+    // əvvəl text-i çıxar (reply olsa belə conversation içində olur)
+    const textBody = extractText(env.msg);
+
     const selfLoc = getStaticLocation(env.msg);
-    const quotedLoc = getQuotedLocationFromEnv(env); // ✅ quoted location
+    const quotedLoc = getQuotedLocationFromEnv(env);
 
-    // Əgər mesaj özü location deyilsə, amma reply etdiyi mesaj location-dursa
-    const effectiveLoc = selfLoc || quotedLoc;
+    // ✅ yalnız bu hallarda location kimi işlət:
+    // 1) mesajın özü location-dursa
+    // 2) ya da text YOXDUR, amma quoted location var (nadir hallarda)
+    const shouldHandleAsLocation = !!selfLoc || (!textBody && !!quotedLoc);
+    const effectiveLoc = selfLoc || (shouldHandleAsLocation ? quotedLoc : null);
 
-    if (effectiveLoc) {
+    if (shouldHandleAsLocation && effectiveLoc) {
       const timestamp = formatBakuTimestamp();
 
       const normalizedPhone =
@@ -668,11 +677,13 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         for (const jid of targets) {
           let replyTo;
           let destQuotedMessage;
+          let destFromMe = true; // ✅ default
 
           if (isReply && quoted?.stanzaId) {
             const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
             replyTo = rec?.msgId || undefined;
             destQuotedMessage = rec?.quotedMessage || null;
+            destFromMe = rec?.fromMe ?? true; // ✅ assign
           }
 
           let sentLocationMsgId = null;
@@ -684,7 +695,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
               longitude: effectiveLoc.lng,
               name: (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name.trim() : 'Konum',
               address: effectiveLoc.address || undefined,
-
+              quotedFromMe: destFromMe,
               replyTo,
               quotedMessage: destQuotedMessage || undefined,
               quotedText: quoted?.text || undefined,
@@ -744,7 +755,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     }
 
     // 2) text
-    const textBody = extractText(env.msg);
     if (!textBody) {
       console.log('SKIP: no textBody');
       return;
@@ -818,11 +828,13 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       for (const jid of targets) {
         let replyTo;
         let destQuotedMessage;
+        let destFromMe = true;
 
         if (isReply && quoted?.stanzaId) {
           const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
           replyTo = rec?.msgId || undefined;
-          destQuotedMessage = rec?.quotedMessage || null;; // (text üçün optional)
+          destQuotedMessage = rec?.quotedMessage || null;
+          destFromMe = rec?.fromMe ?? true; // ✅ assign
         }
 
         if (isReply) {
@@ -835,11 +847,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         }
 
         let bridged = bridgedBase;
+        if (!isReply) bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
 
-        // ✅ Reply deyil → tail əlavə et (sub-only logic)
-        if (!isReply) {
-          bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-        }
 
         const resp = await enqueueSend(jid, () => sendText({
           to: jid,
@@ -847,6 +856,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           replyTo,
           quotedText: quoted?.text || undefined,
           quotedMessage: destQuotedMessage || undefined, // ✅ əsas
+          quotedFromMe: destFromMe,
         }));
 
         // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
