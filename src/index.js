@@ -290,19 +290,75 @@ function findFirstSnetJidDeep(any) {
 }
 
 function normalizeEnvelope(data) {
-  const env = data?.messages || data?.message || data || {};
-  const key = env.key || {};
-  const msg = env.message || {};
-  const out = {
+  // Evolution bəzən:
+  // data = { messages: [ ... ] }
+  // data = { message: { ... } }
+  // data = { ...messageObject... }
+  // və ya req.body.data yerinə birbaşa req.body içində fields olur
+
+  const root = data || {};
+
+  // 1) Ən çox rast gəlinən: array messages
+  const m1 = Array.isArray(root.messages) ? root.messages[0] : null;
+
+  // 2) bəzən message obyekti
+  const m2 = root.message && typeof root.message === 'object' ? root.message : null;
+
+  // 3) bəzən root özü message obyekti olur (key/message var)
+  const m3 = (root.key || root.message) ? root : null;
+
+  const env = m1 || m2 || m3 || {};
+
+  // key haradadırsa götür
+  const key = env.key || root.key || {};
+
+  // message haradadırsa götür
+  const msg = env.message || root.message || env.msg || {};
+
+  // remoteJid bəzən: key.remoteJid, env.remoteJid, env.chatId, env.from, env.to
+  const remoteJid =
+    key.remoteJid ||
+    env.remoteJid ||
+    env.chatId ||
+    env.from ||
+    env.to ||
+    root.remoteJid ||
+    root.chatId ||
+    null;
+
+  const participant =
+    key.participant ||
+    env.participant ||
+    env.sender ||
+    env.from ||
+    root.participant ||
+    root.sender ||
+    null;
+
+  const id =
+    key.id ||
+    env.id ||
+    env.messageId ||
+    env.stanzaId ||
+    root.id ||
+    root.messageId ||
+    null;
+
+  const fromMe =
+    !!key.fromMe ||
+    !!env.fromMe ||
+    !!env?.key?.fromMe ||
+    false;
+
+  return {
     key,
     msg,
-    remoteJid: key.remoteJid || env.remoteJid,
-    participant: key.participant || env.participant,
-    id: key.id || env.id,
-    fromMe: !!key.fromMe || !!env.fromMe,
+    remoteJid,
+    participant,
+    id,
+    fromMe,
     raw: env,
   };
-  return out;
 }
 
 // Webhook payload-dan mesaj vaxtını çıxar (ms)
@@ -415,6 +471,16 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     const { event, data } = req.body || {};
 
     const allowed = new Set(['messages_upsert']); // normalized
+    if (ev === 'messages_upsert') {
+      console.log('UPSERT BODY (short)=', shortJson(req.body, 4000));
+    }
+
+    console.log('ENV CHECK', {
+      remoteJid: env.remoteJid,
+      allowed: ALLOWED_GROUPS.has(env.remoteJid),
+      GROUP_A_JID,
+    });
+
     const ev = normEvent(event);
     if (!allowed.has(ev)) {
       console.log('SKIP: event not allowed', { event, ev });
@@ -423,23 +489,22 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     const REQUIRE_WEBHOOK_APIKEY = process.env.REQUIRE_WEBHOOK_APIKEY === '1';
 
-if (REQUIRE_WEBHOOK_APIKEY) {
-  if (!verifySignature(req)) {
-    console.log('SKIP: invalid apikey', { got: req.get('apikey') });
-    return;
-  }
-} else {
-  if (!req.get('apikey')) {
-    console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
-  }
-}
+    if (REQUIRE_WEBHOOK_APIKEY) {
+      if (!verifySignature(req)) {
+        console.log('SKIP: invalid apikey', { got: req.get('apikey') });
+        return;
+      }
+    } else {
+      if (!req.get('apikey')) {
+        console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
+      }
+    }
 
-
-    const env = normalizeEnvelope(data);
+    const env = normalizeEnvelope(req.body?.data || req.body);
 
     // Özümüzdən çıxanları at
     if (env.fromMe) return;
-    
+
     if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) return;
 
     // ✅ əvvəl freshness (text + location üçün)
