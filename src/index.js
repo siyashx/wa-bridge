@@ -440,83 +440,81 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
   // Wasender sürətli 200 istəyir
   res.status(200).json({ received: true });
 
-  // 1) event-i əvvəl çıxar (ev burada LAZIMDIR)
+  // 1) event-i əvvəl çıxar
   const evRaw = req.body?.event;
   const ev = normEvent(evRaw);
 
+  // 2) log
   console.log('WEBHOOK HIT', {
     path: req.originalUrl,
     eventRaw: evRaw,
     eventNorm: ev,
-    hasApikey: !!req.get('apikey'),
+    hasApikey: !!(req.get('apikey') || req.body?.apikey),
     headers: pickHeaders(req),
   });
 
-  // 2) yalnız icazə verdiyin event-lər
-  const allowed = new Set(['messages_upsert']);
-  if (!allowed.has(ev)) {
+  // 3) yalnız icazə verdiyin event-lər
+  const allowedEvents = new Set(['messages_upsert']);
+  if (!allowedEvents.has(ev)) {
     console.log('SKIP: event not allowed', { event: evRaw, ev });
     return;
   }
 
-  // 3) apikey yoxlaması (istəsən REQUIRE_WEBHOOK_APIKEY=1 et)
+  // 4) apikey yoxlaması (default: permissive)
   const REQUIRE_WEBHOOK_APIKEY = process.env.REQUIRE_WEBHOOK_APIKEY === '1';
-  if (REQUIRE_WEBHOOK_APIKEY && !verifySignature(req)) {
-    console.log('SKIP: invalid apikey', { got: req.get('apikey') });
-    return;
-  }
-  if (!REQUIRE_WEBHOOK_APIKEY && !req.get('apikey')) {
-    console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
+
+  // Evolution/Wasender bəzən apikey-ni BODY-ə də qoyur
+  const gotKey = req.get('apikey') || req.body?.apikey || req.body?.data?.apikey;
+
+  if (REQUIRE_WEBHOOK_APIKEY) {
+    // verifySignature req.get('apikey') istifadə edirsə, BODY key-ni header kimi “kopyalamaq” olmur,
+    // ona görə verifySignature-ni səndə belə yazmaq daha düz olar:
+    // const apikey = req.get('apikey') || req.body?.apikey;
+    // return apikey === EVOLUTION_API_KEY;
+    if (!verifySignature(req)) {
+      console.log('SKIP: invalid apikey', { got: gotKey ? '[present]' : '[missing]' });
+      return;
+    }
+  } else {
+    if (!gotKey) console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
   }
 
-  // 4) messages.upsert BODY-ni qısa logla
+  // 5) body qısa log
   console.log('UPSERT BODY (short)=', shortJson(req.body, 4000));
 
   try {
-
+    // ✅ ən stabil: data-dan envelope çıxar
     const env = normalizeEnvelope(req.body?.data || req.body);
 
-    if (!env?.remoteJid) {
-  console.log('SKIP: no remoteJid in env');
-  return;
-}
-
-const gotKey = req.get('apikey') || req.body?.apikey;
-if (!REQUIRE_WEBHOOK_APIKEY && !gotKey) {
-  console.log('WARN: apikey missing (allowed because REQUIRE_WEBHOOK_APIKEY!=1)');
-}
-
-
     console.log('WEBHOOK SNAP', {
-      id: env.id,
-      remoteJid: env.remoteJid,
-      participant: env.participant,
-      fromMe: env.fromMe,
+      id: env?.id ?? null,
+      remoteJid: env?.remoteJid ?? null,
+      participant: env?.participant ?? null,
+      fromMe: !!env?.fromMe,
     });
 
-    console.log('ENV CHECK', {
-      remoteJid: env.remoteJid,
-      allowed: ALLOWED_GROUPS.has(env.remoteJid),
-      GROUP_A_JID,
-      dests: DEST_GROUPS,
-    });
-
-    // Özümüzdən çıxanları at
-    if (env.fromMe) {
+    // fromMe at
+    if (env?.fromMe) {
       console.log('SKIP: fromMe');
       return;
     }
 
-    // yalnız A qrupu
-    if (!env.remoteJid || !ALLOWED_GROUPS.has(env.remoteJid)) {
-      console.log('SKIP: not allowed group', { remoteJid: env.remoteJid });
+    // remoteJid yoxdursa stop (səndə artıq bu problemi görmüşdük)
+    if (!env?.remoteJid) {
+      console.log('SKIP: no remoteJid in env');
       return;
     }
 
-    // -------------- BURADAN SONRA SƏNİN KÖHNƏ LOGIC DƏYİŞMİR --------------
+    // yalnız allowed qrup
+    if (!ALLOWED_GROUPS.has(env.remoteJid)) {
+      console.log('SKIP: not allowed group', { remoteJid: env.remoteJid, allow: [...ALLOWED_GROUPS] });
+      return;
+    }
 
+    // ✅ əvvəl freshness (text + location üçün)
     const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
+    // reply mesajları istisna
     const quoted = extractQuoted(env.msg);
     const isReply = !!quoted;
 
@@ -525,11 +523,13 @@ if (!REQUIRE_WEBHOOK_APIKEY && !gotKey) {
       return;
     }
 
+    // Dedup (ID based)
     if (seenRecently(env.id)) {
-      console.log('SKIP: dedup');
+      console.log('SKIP: dedup (id)');
       return;
     }
 
+    // ✅ Telefonu çıxar: üstünlük BODY-dəki @s.whatsapp.net, sonra participant, sonra @lid
     const foundSnet = findFirstSnetJidDeep(req.body);
 
     let phone =
@@ -538,50 +538,205 @@ if (!REQUIRE_WEBHOOK_APIKEY && !gotKey) {
 
     if (!phone) phone = parseDigitsFromLid(env.participant);
 
+    // 1) əvvəl location yoxla
     const loc = getStaticLocation(env.msg);
+
     if (loc) {
-      console.log('LOC detected', { lat: loc.lat, lng: loc.lng });
+      const timestamp = formatBakuTimestamp();
 
-      const phonePrefixed = phone ? `+${phone}` : '';
+      const normalizedPhone =
+        (parsePhoneFromSNetJid(foundSnet) ||
+          parsePhoneFromSNetJid(env.participant) ||
+          parseDigitsFromLid(env.participant) ||
+          '');
 
-      const targets = getDestGroupsFor(env.remoteJid);
-      console.log('FORWARD targets (loc)=', targets);
+      const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
 
-      for (const jid of targets) {
-        await enqueueSend(jid, () => sendLocation({
-          to: jid,
-          latitude: loc.lat,
-          longitude: loc.lng,
-          name: loc.name || 'Konum',
-          address: loc.address || undefined,
-        }));
+      // ✅ BACKEND/STOMP üçün newChat (location)
+      const newChat = {
+        id: Date.now(),
+        groupId: "0",
+        userId: 2,
+        username: "Sifariş Qrupu İstifadəçisi",
+        phone: phonePrefixed,
+        isSeenIds: [],
+        messageType: "location",
+        isReply: "false",
+        userType: "customer",
+        message: loc.caption || loc.name || "",
+        timestamp,
+        isCompleted: false,
+        locationLat: loc.lat,
+        locationLng: loc.lng,
+        thumbnail: loc._raw?.jpegThumbnail || null
+      };
 
-        await enqueueSend(jid, () => sendText({
-          to: jid,
-          text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`,
-        }));
+      // ✅ STOMP publish
+      try {
+        publishStomp('/app/sendChatMessage', newChat);
+      } catch (e) {
+        console.error('STOMP publish error (location):', e?.message);
       }
-      return;
+
+      // ✅ OneSignal push
+      try {
+        const preview = (newChat.message && newChat.message.trim())
+          ? newChat.message.slice(0, 140)
+          : `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}`;
+
+        const oneSignalIds = await fetchPushTargets(0);
+        if (oneSignalIds.length) {
+          await sendPushNotification(
+            oneSignalIds,
+            '🪄🪄 Yeni Sifariş!!',
+            `📍 ${preview}`
+          );
+        }
+      } catch (pushErr) {
+        console.error('Post-publish push error (location):', pushErr?.message);
+      }
+
+      // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL location forward + mapping
+      try {
+        const targets = getDestGroupsFor(env.remoteJid);
+        console.log('FORWARD targets (loc)=', targets);
+
+        for (const jid of targets) {
+          const respLoc = await enqueueSend(jid, () => sendLocation({
+            to: jid,
+            latitude: loc.lat,
+            longitude: loc.lng,
+            name: loc.name || (newChat.message?.trim() || 'Konum'),
+            address: loc.address || undefined,
+          }));
+
+          const msgIdLoc = respLoc?.msgId || respLoc?.data?.msgId;
+          if (msgIdLoc) {
+            // ✅ reply mapping üçün saxla
+            forwardMapPut(env.remoteJid, env.id, jid, msgIdLoc);
+          }
+
+          // ✅ sonra tail
+          await enqueueSend(jid, () => sendText({
+            to: jid,
+            text: (typeof SUB_ONLY_DEST_JID !== 'undefined' && jid === SUB_ONLY_DEST_JID)
+              ? SUB_ONLY_TAIL
+              : `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`
+          }));
+        }
+      } catch (e) {
+        console.error('Forward (location) error:', e?.response?.data || e.message);
+      }
+
+      return; // ✅ location bitdi
     }
 
+    // 2) text
     const textBody = extractText(env.msg);
     if (!textBody) {
       console.log('SKIP: no textBody');
       return;
     }
 
+    const timestamp = formatBakuTimestamp();
+    const normalizedPhone = phone ? `+${phone}`.replace('++', '+') : '';
     const cleanMessage = String(textBody);
-    const phoneForTail = phone ? `+${phone}` : '—';
 
-    const targets = getDestGroupsFor(env.remoteJid);
-    console.log('FORWARD targets (text)=', targets);
-
-    for (const jid of targets) {
-      const bridged = `${cleanMessage}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-      const resp = await enqueueSend(jid, () => sendText({ to: jid, text: bridged }));
-      console.log('SENT OK', { to: jid, msgId: resp?.msgId || resp?.data?.msgId });
+    // ✅ shouldBlockMessage filtri
+    if (shouldBlockMessage(cleanMessage)) {
+      console.log('SKIP: blocked by shouldBlockMessage');
+      return;
     }
 
+    // ✅ DB-based dublikat (reply deyilsə)
+    if (!isReply) {
+      const dup = await isDuplicateChatMessage(cleanMessage);
+      if (dup) {
+        console.log('SKIP: duplicate by DB message check');
+        return;
+      }
+    }
+
+    // ✅ BACKEND/STOMP newChat (text)
+    const newChat = {
+      id: Date.now(),
+      groupId: "0",
+      userId: 2,
+      username: 'Sifariş Qrupu İstifadəçisi',
+      phone: normalizedPhone,
+      isSeenIds: [],
+      messageType: "text",
+      isReply: "false",
+      userType: "customer",
+      message: cleanMessage,
+      timestamp,
+      isCompleted: false,
+    };
+
+    // ✅ STOMP publish
+    try {
+      publishStomp('/app/sendChatMessage', newChat);
+    } catch (e) {
+      console.error('STOMP publish error (text):', e?.message);
+    }
+
+    // ✅ OneSignal push
+    try {
+      const oneSignalIds = await fetchPushTargets(0);
+      if (oneSignalIds.length) {
+        const preview = (cleanMessage || '').slice(0, 140);
+        await sendPushNotification(
+          oneSignalIds,
+          '🪄🪄 Yeni Sifariş!!',
+          `📩 ${preview}`
+        );
+      }
+    } catch (pushErr) {
+      console.error('Post-publish push error (text):', pushErr?.message);
+    }
+
+    // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (replyTo + map)
+    try {
+      const targets = getDestGroupsFor(env.remoteJid);
+      console.log('FORWARD targets (text)=', targets);
+
+      const phoneForTail = normalizedPhone || '—';
+      let bridgedBase = cleanMessage;
+
+      for (const jid of targets) {
+        let replyTo;
+
+        // ✅ Reply mesajdırsa: dest-dəki map olunmuş msgId-ni tap
+        if (isReply && quoted?.stanzaId) {
+          replyTo = forwardMapGet(env.remoteJid, quoted.stanzaId, jid) || undefined;
+        }
+
+        let bridged = bridgedBase;
+
+        // ✅ Reply deyil → tail əlavə et (sub-only logic)
+        if (!isReply) {
+          if (typeof SUB_ONLY_DEST_JID !== 'undefined' && jid === SUB_ONLY_DEST_JID) {
+            bridged = `${bridged}\n\n${SUB_ONLY_TAIL}`;
+          } else {
+            bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
+          }
+        }
+
+        const resp = await enqueueSend(jid, () => sendText({
+          to: jid,
+          text: bridged,
+          replyTo,
+        }));
+
+        // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
+        if (!isReply) {
+          const msgId = resp?.msgId || resp?.data?.msgId;
+          if (msgId) forwardMapPut(env.remoteJid, env.id, jid, msgId);
+        }
+      }
+    } catch (e) {
+      console.error('Forward (text) error:', e?.response?.data || e.message);
+    }
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
