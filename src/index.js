@@ -1003,12 +1003,6 @@ async function getChats(params) {
   });
 }
 
-/**
- * Dublikat yoxla:
- * - messageText: incoming text (və ya locationTitle)
- * - messageType: "text" | "location"
- * - phone: +994... (istəsən daxil et)
- */
 async function isDuplicateByLastChats(messageText, messageType = "text", phone = "") {
   const needle = normMsg(messageText);
   if (!needle) return false;
@@ -1025,9 +1019,6 @@ async function isDuplicateByLastChats(messageText, messageType = "text", phone =
 
     if (!list.length) return false;
 
-    // optional: phone da yoxlamağa qatmaq istəyirsənsə
-    const phoneNeedle = String(phone || "").trim();
-
     return list.some((c) => {
       const m = normMsg(c?.message);
       if (!m) return false;
@@ -1035,12 +1026,7 @@ async function isDuplicateByLastChats(messageText, messageType = "text", phone =
       const t = String(c?.messageType || c?.type || "").toLowerCase();
       const sameType = !messageType ? true : (t === String(messageType).toLowerCase());
 
-      // phone check: istəyirsənsə aktiv et
-      const samePhone = !phoneNeedle
-        ? true
-        : (String(c?.phone || "").trim() === phoneNeedle);
-
-      return sameType && samePhone && (m === needle);
+      return sameType && (m === needle);
     });
 
   } catch (e) {
