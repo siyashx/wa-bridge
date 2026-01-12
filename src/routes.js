@@ -31,8 +31,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
       const A = process.env.GROUP_A_JID;
       const B = process.env.GROUP_B_JID;
+      const C = process.env.GROUP_C_JID;
 
-      if (remoteJid !== A && remoteJid !== B) continue;
+      if (remoteJid !== A && remoteJid !== B && remoteJid !== C) continue;
 
       const msg = m.message || {};
 

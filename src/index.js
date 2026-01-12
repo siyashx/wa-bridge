@@ -14,6 +14,7 @@ const {
   EVOLUTION_API_KEY,
   GROUP_A_JID,
   GROUP_B_JID,
+  GROUP_C_JID,
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   WS_URL = 'wss://mototaksi.az:9898/ws',
   ONE_SIGNAL_APP_ID,
@@ -22,7 +23,7 @@ const {
 } = process.env;
 
 const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_B_JID].filter(Boolean)
+  [GROUP_A_JID, GROUP_B_JID, GROUP_C_JID].filter(Boolean)
 );
 
 // ✅ Hədəf (forward) qrupların siyahısı
@@ -263,7 +264,7 @@ function getDestGroupsFor(sourceJid) {
   } */
 
   // 2) A qrupundan gəlirsə: hər iki dest-ə göndər (listdə nə varsa)
-  if (sourceJid === GROUP_A_JID || sourceJid === GROUP_B_JID) {
+  if (sourceJid === GROUP_A_JID || sourceJid === GROUP_B_JID || sourceJid == GROUP_C_JID) {
     return DEST_GROUPS.slice();
   }
 
