@@ -30,19 +30,6 @@ const {
   ANDROID_CHANNEL_ID,
 } = process.env;
 
-// ✅ group routing
-const isNewChatOnlyGroup = NEWCHAT_ONLY_GROUPS.has(env.remoteJid);
-const isAllowedForwardGroup = ALLOWED_GROUPS.has(env.remoteJid);
-
-if (!isAllowedForwardGroup && !isNewChatOnlyGroup) {
-  console.log('SKIP: not allowed group', {
-    remoteJid: env.remoteJid,
-    allowForward: [...ALLOWED_GROUPS],
-    allowNewChatOnly: [...NEWCHAT_ONLY_GROUPS],
-  });
-  return;
-}
-
 // ✅ Hədəf (forward) qrupların siyahısı
 const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .split(',')
@@ -50,6 +37,8 @@ const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
   .filter(Boolean);
 
 const SUB_ONLY_TAIL = 'Sifarişi qəbul etmək üçün aylıq abunə haqqı ödəməlisiniz ✅ 5 AZN';
+
+const ALLOWED_GROUPS = new Set([GROUP_A_JID, GROUP_B_JID, GROUP_C_JID].filter(Boolean));
 
 /* ---------------- WA send queue (reliable) ---------------- */
 const BURST_WINDOW_MS = Number(process.env.BURST_WINDOW_MS || 5000);
@@ -531,6 +520,19 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     // ✅ ən stabil: data-dan envelope çıxar
     const env = normalizeEnvelope(req.body?.data || req.body);
 
+    // ✅ group routing (BURDA OLMALIDIR)
+    const isNewChatOnlyGroup = NEWCHAT_ONLY_GROUPS.has(env.remoteJid);
+    const isAllowedForwardGroup = ALLOWED_GROUPS.has(env.remoteJid);
+
+    if (!isAllowedForwardGroup && !isNewChatOnlyGroup) {
+      console.log('SKIP: not allowed group', {
+        remoteJid: env.remoteJid,
+        allowForward: [...ALLOWED_GROUPS],
+        allowNewChatOnly: [...NEWCHAT_ONLY_GROUPS],
+      });
+      return; // ✅ burda OK, çünki handler-in içindədir
+    }
+
     console.log('WEBHOOK SNAP', {
       id: env?.id ?? null,
       remoteJid: env?.remoteJid ?? null,
@@ -551,12 +553,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     // ✅ RemoteJid yoxdursa stop
     if (!env?.remoteJid) {
       console.log('SKIP: no remoteJid in env');
-      return;
-    }
-
-    // ✅ yalnız allowed qrup (istəsən reply üçün bunu da ləğv edə bilərik)
-    if (!ALLOWED_GROUPS.has(env.remoteJid)) {
-      console.log('SKIP: not allowed group', { remoteJid: env.remoteJid, allow: [...ALLOWED_GROUPS] });
       return;
     }
 
