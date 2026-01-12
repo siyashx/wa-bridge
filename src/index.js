@@ -9,6 +9,14 @@ import { sendText, sendLocation } from './forwarder.js';
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// ✅ yalnız BACKEND/STOMP (newChat) üçün icazəli qruplar
+const NEWCHAT_ONLY_GROUPS = new Set(
+  String(process.env.NEWCHAT_ONLY_GROUP_JIDS || '120363031082342256@g.us')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+);
+
 const {
   PORT = 4242,
   EVOLUTION_API_KEY,
@@ -22,9 +30,18 @@ const {
   ANDROID_CHANNEL_ID,
 } = process.env;
 
-const ALLOWED_GROUPS = new Set(
-  [GROUP_A_JID, GROUP_B_JID, GROUP_C_JID].filter(Boolean)
-);
+// ✅ group routing
+const isNewChatOnlyGroup = NEWCHAT_ONLY_GROUPS.has(env.remoteJid);
+const isAllowedForwardGroup = ALLOWED_GROUPS.has(env.remoteJid);
+
+if (!isAllowedForwardGroup && !isNewChatOnlyGroup) {
+  console.log('SKIP: not allowed group', {
+    remoteJid: env.remoteJid,
+    allowForward: [...ALLOWED_GROUPS],
+    allowNewChatOnly: [...NEWCHAT_ONLY_GROUPS],
+  });
+  return;
+}
 
 // ✅ Hədəf (forward) qrupların siyahısı
 const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
@@ -650,6 +667,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         const targets = getDestGroupsFor(env.remoteJid);
         console.log('FORWARD targets (loc)=', targets);
 
+        // ✅ NEWCHAT ONLY qrupdursa WhatsApp forward etmə
+        if (isNewChatOnlyGroup) {
+          console.log('SKIP WA FORWARD (location): newChatOnly group', { remoteJid: env.remoteJid });
+          return;
+        }
+
         for (const jid of targets) {
           let replyTo;
           let destQuotedMessage;
@@ -783,6 +806,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
       const phoneForTail = normalizedPhone || '—';
       let bridgedBase = cleanMessage;
+
+      // ✅ NEWCHAT ONLY qrupdursa WhatsApp forward etmə
+      if (isNewChatOnlyGroup) {
+        console.log('SKIP WA FORWARD (text): newChatOnly group', { remoteJid: env.remoteJid });
+        return;
+      }
 
       for (const jid of targets) {
         let replyTo;
