@@ -460,39 +460,6 @@ function getStaticLocation(msg) {
   };
 }
 
-// ✅ Reply içində gələn location-u çıxarır (quotedMessage.locationMessage)
-function getQuotedLocation(msg) {
-  if (!msg) return null;
-
-  const core = msg.viewOnceMessageV2?.message || msg;
-
-  const ctx =
-    core.extendedTextMessage?.contextInfo ||
-    core.imageMessage?.contextInfo ||
-    core.videoMessage?.contextInfo ||
-    core.documentMessage?.contextInfo ||
-    core.audioMessage?.contextInfo ||
-    core.contextInfo ||
-    null;
-
-  const lm = ctx?.quotedMessage?.locationMessage;
-  if (!lm) return null;
-
-  const lat = Number(lm.degreesLatitude);
-  const lng = Number(lm.degreesLongitude);
-
-  return {
-    kind: 'location',
-    lat, lng,
-    name: lm.name || null,
-    address: lm.address || null,
-    caption: lm.caption || null,
-    url: lm.url || `https://maps.google.com/?q=${lat},${lng}`,
-    _raw: lm,
-    _fromQuoted: true, // debug üçün
-  };
-}
-
 /* ---------------- routes ---------------- */
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -628,6 +595,20 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name :
             '';
 
+      const locNeedle = locationTitle
+        ? `${locationTitle} @ ${effectiveLoc.lat.toFixed(6)},${effectiveLoc.lng.toFixed(6)}`
+        : `${effectiveLoc.lat.toFixed(6)},${effectiveLoc.lng.toFixed(6)}`;
+
+      if (!isReply) {
+
+        const dupLoc = await isDuplicateByLastChats(locNeedle, "location", phonePrefixed);
+
+        if (dupLoc) {
+          console.log("SKIP: duplicate by last chats (location)");
+          return;
+        }
+      }
+
       // ✅ Reply mesajlar BACKEND/STOMP-ə getməsin
       if (isReply) {
         console.log('SKIP BACKEND/STOMP (location): reply message');
@@ -643,7 +624,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           messageType: "location",
           isReply: "false",
           userType: "customer",
-          message: locationTitle,
+          message: locNeedle,
           timestamp,
           isCompleted: false,
           locationLat: effectiveLoc.lat,
@@ -756,9 +737,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     // ✅ DB-based dublikat (reply deyilsə)
     if (!isReply) {
-      const dup = await isDuplicateChatMessage(cleanMessage);
+      const dup = await isDuplicateByLastChats(cleanMessage, "text", normalizedPhone);
       if (dup) {
-        console.log('SKIP: duplicate by DB message check');
+        console.log("SKIP: duplicate by last chats (text)");
         return;
       }
     }
@@ -975,21 +956,71 @@ function shouldBlockMessage(raw, isReply = false) {
   return false;
 }
 
-async function isDuplicateChatMessage(messageText) {
+const CHAT_LIMIT = Number(process.env.CHAT_LIMIT || 10);
+const CHAT_GROUP_IDS = String(process.env.CHAT_GROUP_IDS || "0,1");
+
+// mesajı stabil müqayisə üçün normalize
+function normMsg(s) {
+  return String(s || "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// /api/chats çağırışı (limit + groupIds)
+async function getChats(params) {
+  // sənin yazdığın kimi:
+  // export const getChats = (params) => api.get('/api/chats', { params });
+  // backend-də isə axios ilə:
+  return axios.get(`${TARGET_API_BASE}/api/chats`, {
+    params,
+    timeout: 15000,
+  });
+}
+
+/**
+ * Dublikat yoxla:
+ * - messageText: incoming text (və ya locationTitle)
+ * - messageType: "text" | "location"
+ * - phone: +994... (istəsən daxil et)
+ */
+async function isDuplicateByLastChats(messageText, messageType = "text", phone = "") {
+  const needle = normMsg(messageText);
+  if (!needle) return false;
+
   try {
-    const res = await axios.get(`${TARGET_API_BASE}/api/chats`, { timeout: 15000 });
+    const resp = await getChats({ limit: CHAT_LIMIT, groupIds: CHAT_GROUP_IDS });
+    const data = resp?.data;
 
-    const data = res?.data; // ✅ əlavə et
-    const list = Array.isArray(data?.messages)
-      ? data.messages
-      : [data?.message || data].filter(Boolean);
+    // API iki cür qayıda bilər: {messages:[...]} və ya birbaşa array
+    const list =
+      Array.isArray(data?.messages) ? data.messages :
+        Array.isArray(data) ? data :
+          [data?.message || data].filter(Boolean);
 
-    const needle = String(messageText || '').trim();
-    if (!needle) return false;
+    if (!list.length) return false;
 
-    return list.some(c => String(c?.message || '').trim() === needle);
+    // optional: phone da yoxlamağa qatmaq istəyirsənsə
+    const phoneNeedle = String(phone || "").trim();
+
+    return list.some((c) => {
+      const m = normMsg(c?.message);
+      if (!m) return false;
+
+      const t = String(c?.messageType || c?.type || "").toLowerCase();
+      const sameType = !messageType ? true : (t === String(messageType).toLowerCase());
+
+      // phone check: istəyirsənsə aktiv et
+      const samePhone = !phoneNeedle
+        ? true
+        : (String(c?.phone || "").trim() === phoneNeedle);
+
+      return sameType && samePhone && (m === needle);
+    });
+
   } catch (e) {
-    console.error('isDuplicateChatMessage error:', e?.response?.status, e?.response?.data || e.message);
+    // endpoint yatıbsa dublikat bloklamayaq (fail-open)
+    console.error("isDuplicateByLastChats error:", e?.response?.status, e?.response?.data || e?.message);
     return false;
   }
 }
