@@ -628,6 +628,9 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         console.log('SKIP BACKEND/STOMP (location): reply message');
       } else {
         // ✅ BACKEND/STOMP üçün newChat (location)
+        const lat = Number(effectiveLoc.lat);
+        const lng = Number(effectiveLoc.lng);
+
         const newChat = {
           id: Date.now(),
           groupId: "0",
@@ -635,20 +638,38 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           username: "Sifariş Qrupu İstifadəçisi",
           phone: phonePrefixed,
           isSeenIds: [],
-          messageType: "location",          // ✅ MÜTLƏQ location
           userType: "customer",
-          isReply: false,                   // ✅ boolean saxla (istəsən "false" string də olar, amma hamıda eyni olsun)
-          message: locationTitle,           // ✅ LocationBubble title burdan oxuyur
-          timestamp,                        // "YYYY-MM-DD HH:mm:ss"
-          isCompleted: false,
 
-          // ✅ LocationBubble bunlarla açılır
-          locationLat: Number(effectiveLoc.lat),
-          locationLng: Number(effectiveLoc.lng),
+          // ✅ type aliases (backend bəzən messageType yox, type saxlayır)
+          messageType: "location",
+          type: "location",
 
-          // ✅ RN-də data:image/jpeg;base64,${thumbnail}
+          // ✅ text
+          message: locationTitle,
+          text: locationTitle,
+
+          // ✅ coords - bir neçə formatda
+          locationLat: lat,
+          locationLng: lng,
+          latitude: lat,
+          longitude: lng,
+          lat,
+          lng,
+          location: { lat, lng },
+
+          // ✅ thumbnail (RN səninki kimi data:image base64 gözləyir)
           thumbnail: effectiveLoc._raw?.jpegThumbnail || null,
+
+          timestamp,           // "YYYY-MM-DD HH:mm:ss"
+          createdAt: timestamp // ✅ bəzən app createdAt oxuyur
         };
+
+        console.log("STOMP NEWCHAT (location) =", {
+          messageType: newChat.messageType,
+          type: newChat.type,
+          locationLat: newChat.locationLat,
+          locationLng: newChat.locationLng
+        });
 
         try { publishStomp('/app/sendChatMessage', newChat); } catch (e) { }
         try {
@@ -1029,8 +1050,10 @@ async function isDuplicateByLastChats(messageText, messageType = "text", phone =
       if (!m) return false;
 
       const t = String(c?.messageType || c?.type || "").toLowerCase();
-      const sameType = !messageType ? true : (t === String(messageType).toLowerCase());
-
+      const looksLikeLoc = Number.isFinite(Number(c?.locationLat ?? c?.lat ?? c?.latitude))
+        && Number.isFinite(Number(c?.locationLng ?? c?.lng ?? c?.longitude));
+      const normT = looksLikeLoc ? "location" : t;
+      const sameType = !messageType ? true : (normT === String(messageType).toLowerCase());
       return sameType && (m === needle);
     });
 
