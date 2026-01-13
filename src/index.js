@@ -606,7 +606,8 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       const locationTitle =
         (effectiveLoc.caption && effectiveLoc.caption.trim()) ? effectiveLoc.caption :
           (effectiveLoc.name && effectiveLoc.name.trim()) ? effectiveLoc.name :
-            '';
+            (effectiveLoc.address && effectiveLoc.address.trim()) ? effectiveLoc.address :
+              'Yer paylaşımı';
 
       const locNeedle = locationTitle
         ? `${locationTitle} @ ${effectiveLoc.lat.toFixed(6)},${effectiveLoc.lng.toFixed(6)}`
@@ -634,15 +635,19 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           username: "Sifariş Qrupu İstifadəçisi",
           phone: phonePrefixed,
           isSeenIds: [],
-          messageType: "location",
-          isReply: "false",
+          messageType: "location",          // ✅ MÜTLƏQ location
           userType: "customer",
-          message: locNeedle,
-          timestamp,
+          isReply: false,                   // ✅ boolean saxla (istəsən "false" string də olar, amma hamıda eyni olsun)
+          message: locationTitle,           // ✅ LocationBubble title burdan oxuyur
+          timestamp,                        // "YYYY-MM-DD HH:mm:ss"
           isCompleted: false,
-          locationLat: effectiveLoc.lat,
-          locationLng: effectiveLoc.lng,
-          thumbnail: effectiveLoc._raw?.jpegThumbnail || null
+
+          // ✅ LocationBubble bunlarla açılır
+          locationLat: Number(effectiveLoc.lat),
+          locationLng: Number(effectiveLoc.lng),
+
+          // ✅ RN-də data:image/jpeg;base64,${thumbnail}
+          thumbnail: effectiveLoc._raw?.jpegThumbnail || null,
         };
 
         try { publishStomp('/app/sendChatMessage', newChat); } catch (e) { }
