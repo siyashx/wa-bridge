@@ -904,7 +904,12 @@ async function sendPushNotification(ids, title, body) {
 
     const v25Set = new Set(
       users
-        .filter(u => Number(u?.appVersion) >= 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
+        .filter(u =>
+          Number(u?.appVersion) >= 25 &&
+          u?.hasActiveApp !== 'mototaxi' &&      // ✅ YENİ ŞƏRT
+          u?.oneSignal &&
+          isValidUUID(String(u.oneSignal))
+        )
         .map(u => String(u.oneSignal).trim())
     );
 
