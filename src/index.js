@@ -4,7 +4,6 @@ import express from 'express';
 import axios from 'axios';
 import { Client } from '@stomp/stompjs';
 import WebSocket from 'ws';
-import { sendText, sendLocation } from './forwarder.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -30,116 +29,13 @@ const {
   ANDROID_CHANNEL_ID,
 } = process.env;
 
-// ✅ Hədəf (forward) qrupların siyahısı
-const DEST_GROUPS = String(process.env.DEST_GROUP_JIDS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-const SUB_ONLY_TAIL = 'Sifarişi qəbul etmək üçün aylıq abunə haqqı ödəməlisiniz ✅ 5 AZN';
-
 const ALLOWED_GROUPS = new Set([GROUP_A_JID, GROUP_B_JID, GROUP_C_JID].filter(Boolean));
-
-/* ---------------- WA send queue (reliable) ---------------- */
-const BURST_WINDOW_MS = Number(process.env.BURST_WINDOW_MS || 5000);
-
-// retry parametrləri
-const SEND_RETRY_MAX = Number(process.env.SEND_RETRY_MAX || 8);
-const SEND_RETRY_BASE_MS = Number(process.env.SEND_RETRY_BASE_MS || 1200);
-const SEND_RETRY_MAX_MS = Number(process.env.SEND_RETRY_MAX_MS || 20000);
-const MAX_QUEUE_PER_JID = Number(process.env.MAX_QUEUE_PER_JID || 300);
-
-const sendQueues = new Map();
-
-function getQueue(jid) {
-  if (!sendQueues.has(jid)) {
-    sendQueues.set(jid, { busy: false, q: [], lastSentMs: 0 });
-  }
-  return sendQueues.get(jid);
-}
-
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-function expBackoff(attempt) {
-  const ms = Math.min(SEND_RETRY_MAX_MS, SEND_RETRY_BASE_MS * Math.pow(2, attempt));
-  return ms + Math.floor(Math.random() * 250); // jitter
-}
-
-function isRetryableError(e) {
-  // axios timeout -> çox vaxt göndərilib, sadəcə cavab gecikib
-  if (e?.code === 'ECONNABORTED') return false;
-
-  const status = e?.response?.status;
-  if (!status) return true;              // digər network error
-  if (status === 429 || status === 408) return true;
-  if (status >= 500 && status <= 599) return true;
-  return false;
-}
-
-function enqueueSend(jid, fn) {
-  return new Promise((resolve, reject) => {
-    const bucket = getQueue(jid);
-
-    if (bucket.q.length >= MAX_QUEUE_PER_JID) {
-      return reject(new Error(`Queue overflow for ${jid} (len=${bucket.q.length})`));
-    }
-
-    bucket.q.push({ fn, resolve, reject, attempt: 0 });
-
-    if (!bucket.busy) processQueue(jid).catch(() => { });
-  });
-}
-
-async function processQueue(jid) {
-  const bucket = getQueue(jid);
-  if (bucket.busy) return;
-  bucket.busy = true;
-
-  while (bucket.q.length) {
-    const job = bucket.q[0]; // ✅ SHIFT YOX: yalnız success olanda çıxacaq
-
-    // ✅ ilk mesaj dərhal: lastSentMs=0 -> gözləmir
-    const now = Date.now();
-    const elapsed = now - (bucket.lastSentMs || 0);
-    if (bucket.lastSentMs && elapsed < BURST_WINDOW_MS) {
-      await sleep(BURST_WINDOW_MS - elapsed);
-    }
-
-    try {
-      const res = await job.fn();
-
-      // ✅ yalnız UĞURLU göndərişdən sonra
-      bucket.lastSentMs = Date.now();
-      bucket.q.shift();
-      job.resolve(res);
-
-    } catch (e) {
-      const retryable = isRetryableError(e);
-
-      if (!retryable || job.attempt >= SEND_RETRY_MAX) {
-        // retry yoxdur -> drop + reject
-        bucket.q.shift();
-        job.reject(e);
-      } else {
-        job.attempt += 1;
-        const waitMs = expBackoff(job.attempt);
-        console.error(
-          `send retry: jid=${jid} attempt=${job.attempt} wait=${waitMs}ms status=${e?.response?.status || 'na'} msg=${e?.message}`
-        );
-        await sleep(Math.max(waitMs, BURST_WINDOW_MS));
-        // job queue-da qalır, loop yenə cəhd edəcək
-      }
-    }
-  }
-
-  bucket.busy = false;
-}
 
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
 const DEDUP_WINDOW_MS = Number(process.env.DEDUP_WINDOW_MS || 5 * 60 * 1000);
+
+const PUBLISH_QUEUE_MAX = Number(process.env.PUBLISH_QUEUE_MAX || 5000);
 
 function seenRecently(id) {
   if (!id) return false;
@@ -155,47 +51,6 @@ function seenRecently(id) {
     }
   }
   return false;
-}
-
-// A mesaj id -> (destJid -> wasender msgId) xəritəsi
-const forwardMap = new Map(); // key -> { ts, dest: { [jid]: msgId } }
-const FORWARDMAP_TTL = 24 * 60 * 60 * 1000; // 24 saat
-
-function fmKey(sourceGroupJid, sourceMsgId) {
-  return `${sourceGroupJid}::${sourceMsgId}`;
-}
-
-function forwardMapPut(sourceGroupJid, sourceMsgId, destJid, msgId, quotedMessage) {
-  if (!sourceMsgId || !destJid || !msgId) return;
-  const key = fmKey(sourceGroupJid, sourceMsgId);
-  const now = Date.now();
-
-  const cur = forwardMap.get(key) || { ts: now, dest: {} };
-  cur.ts = now;
-
-  // ✅ B-də bu mesajı bot göndərir → fromMe true
-  cur.dest[destJid] = { msgId, quotedMessage: quotedMessage || null, fromMe: true };
-
-  forwardMap.set(key, cur);
-
-  if (forwardMap.size > 20000) {
-    const cutoff = now - FORWARDMAP_TTL;
-    for (const [k, v] of forwardMap) {
-      if (!v?.ts || v.ts < cutoff) forwardMap.delete(k);
-    }
-  }
-}
-
-function forwardMapGetRec(sourceGroupJid, sourceMsgId, destJid) {
-  const key = fmKey(sourceGroupJid, sourceMsgId);
-  const rec = forwardMap.get(key);
-  if (!rec) return null;
-
-  if (Date.now() - rec.ts > FORWARDMAP_TTL) {
-    forwardMap.delete(key);
-    return null;
-  }
-  return rec.dest?.[destJid] || null; // {msgId, quotedMessage, fromMe}
 }
 
 /* ---------------- helpers ---------------- */
@@ -261,21 +116,6 @@ function parseDigitsFromLid(jid) {
   const m = String(jid).match(/^(\d+)@lid$/);
   const out = m ? m[1] : String(jid).replace(/@.*/, '');
   return out;
-}
-
-function getDestGroupsFor(sourceJid) {
-  // 1) B qrupundan gəlirsə: B-yə geri göndərmə, yalnız digər dest-lərə göndər
-  /* if (sourceJid === GROUP_B_JID) {
-    return DEST_GROUPS.filter(jid => jid !== GROUP_B_JID);
-  } */
-
-  // 2) A qrupundan gəlirsə: hər iki dest-ə göndər (listdə nə varsa)
-  if (sourceJid === GROUP_A_JID || sourceJid === GROUP_B_JID || sourceJid == GROUP_C_JID) {
-    return DEST_GROUPS.slice();
-  }
-
-  // fallback
-  return DEST_GROUPS.filter(jid => jid !== sourceJid);
 }
 
 // JSON içində ilk s.whatsapp.net JID-ni tap
@@ -684,83 +524,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         } catch (e) { }
       }
 
-      // ✅ STOMP-dan SONRA — WhatsApp qruplarına REAL location forward + mapping
-      try {
-        const targets = getDestGroupsFor(env.remoteJid);
-        console.log('FORWARD targets (loc)=', targets);
-
-        // ✅ NEWCHAT ONLY qrupdursa WhatsApp forward etmə
-        if (isNewChatOnlyGroup) {
-          console.log('SKIP WA FORWARD (location): newChatOnly group', { remoteJid: env.remoteJid });
-          return;
-        }
-
-        for (const jid of targets) {
-          let replyTo;
-          let destQuotedMessage;
-          let destFromMe = true; // ✅ default
-
-          if (isReply && quoted?.stanzaId) {
-            const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
-            replyTo = rec?.msgId || undefined;
-            destQuotedMessage = rec?.quotedMessage || null;
-            destFromMe = rec?.fromMe ?? true; // ✅ assign
-          }
-
-          let sentLocationMsgId = null;
-
-          try {
-            const respLoc = await enqueueSend(jid, () => sendLocation({
-              to: jid,
-              latitude: effectiveLoc.lat,
-              longitude: effectiveLoc.lng,
-              name: effectiveLoc.name || effectiveLoc.caption || '',
-              address: effectiveLoc.address || '',
-              replyTo,
-              quotedMessage: destQuotedMessage || undefined,
-              quotedText: quoted?.text || undefined,
-              quotedFromMe: destFromMe,
-            }));
-
-            sentLocationMsgId = respLoc?.msgId || respLoc?.data?.msgId || null;
-
-            // ✅ mapping (reply üçün lazımdır)
-            if (sentLocationMsgId) {
-              const quotedMessageForDest = {
-                locationMessage: {
-                  degreesLatitude: effectiveLoc.lat,
-                  degreesLongitude: effectiveLoc.lng,
-                  name: effectiveLoc.name || '',
-                  address: effectiveLoc.address || '',
-                  jpegThumbnail: effectiveLoc._raw?.jpegThumbnail || undefined,
-                },
-              };
-              Object.keys(quotedMessageForDest.locationMessage).forEach(k => {
-                if (quotedMessageForDest.locationMessage[k] === undefined) delete quotedMessageForDest.locationMessage[k];
-              });
-
-              forwardMapPut(env.remoteJid, env.id, jid, sentLocationMsgId, quotedMessageForDest);
-            }
-
-          } catch (err) {
-            console.error('sendLocation failed (NO FALLBACK)', err?.response?.data || err?.message);
-            // ❌ Heç bir text göndərmə
-            // istəsən notify üçün 1 dənə admin log / push edə bilərsən, amma WA-ya link atma
-          }
-
-          // ✅ Tail: reply DEYİLSƏ həmişə göndər (location uğurlu da olsa, fallback da olsa)
-          if (!isReply) {
-            await enqueueSend(jid, () => sendText({
-              to: jid,
-              text: `Sifarişi qəbul etmək üçün əlaqə: ${phonePrefixed || '—'}`
-            }));
-          }
-        }
-
-      } catch (e) {
-        console.error('Forward (location) error:', e?.response?.data || e.message);
-      }
-
       return;
     }
 
@@ -821,63 +584,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
       } catch (e) { }
     }
 
-    // ✅ STOMP-dan SONRA — WhatsApp qruplarına forward (replyTo + map)
-    try {
-      const targets = getDestGroupsFor(env.remoteJid);
-      console.log('FORWARD targets (text)=', targets);
-
-      const phoneForTail = normalizedPhone || '—';
-      let bridgedBase = cleanMessage;
-
-      // ✅ NEWCHAT ONLY qrupdursa WhatsApp forward etmə
-      if (isNewChatOnlyGroup) {
-        console.log('SKIP WA FORWARD (text): newChatOnly group', { remoteJid: env.remoteJid });
-        return;
-      }
-
-      for (const jid of targets) {
-        let replyTo;
-        let destQuotedMessage;
-        let destFromMe = true;
-
-        if (isReply && quoted?.stanzaId) {
-          const rec = forwardMapGetRec(env.remoteJid, quoted.stanzaId, jid);
-          replyTo = rec?.msgId || undefined;
-          destQuotedMessage = rec?.quotedMessage || null;
-          destFromMe = rec?.fromMe ?? true; // ✅ assign
-        }
-
-        if (isReply) {
-          console.log("REPLY DEBUG", {
-            sourceQuotedStanzaId: quoted?.stanzaId,
-            destReplyTo: replyTo || null,
-            quotedText: quoted?.text || null,
-            quotedParticipant: quoted?.participant || null,
-          });
-        }
-
-        let bridged = bridgedBase;
-        if (!isReply) bridged = `${bridged}\n\nSifarişi qəbul etmək üçün əlaqə: ${phoneForTail}`;
-
-        const resp = await enqueueSend(jid, () => sendText({
-          to: jid,
-          text: bridged,
-          replyTo,
-          quotedText: quoted?.text || undefined,
-          quotedMessage: destQuotedMessage || undefined, // ✅ əsas
-          quotedFromMe: destFromMe,
-        }));
-
-        // ✅ Mapping yalnız “əsas” mesajlar üçün (reply-lərdə env.id map etmək çox vaxt lazım olmur)
-        const msgId = resp?.msgId || resp?.data?.msgId;
-        if (msgId) {
-          forwardMapPut(env.remoteJid, env.id, jid, msgId);
-        }
-
-      }
-    } catch (e) {
-      console.error('Forward (text) error:', e?.response?.data || e.message);
-    }
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
@@ -1124,7 +830,6 @@ function initStomp() {
   if (stompClient) return;
 
   stompClient = new Client({
-    brokerURL: WS_URL,
     // Node mühitində WebSocket factory gərəkdir:
     webSocketFactory: () => new WebSocket(WS_URL),
     reconnectDelay: 5000,
@@ -1158,17 +863,19 @@ function initStomp() {
 
 function publishStomp(destination, payloadObj) {
   const body = JSON.stringify(payloadObj);
+
   if (stompClient && stompReady) {
     try {
       stompClient.publish({ destination, body });
+      return;
     } catch (e) {
-      console.error('STOMP publish error, queueing:', e?.message);
-      publishQueue.push({ destination, body });
+      stompReady = false;
     }
-  } else {
-    publishQueue.push({ destination, body });
-    initStomp();
   }
+
+  if (publishQueue.length >= PUBLISH_QUEUE_MAX) publishQueue.shift(); // oldest drop
+  publishQueue.push({ destination, body });
+  initStomp();
 }
 
 // server startında init
