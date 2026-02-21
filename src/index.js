@@ -92,14 +92,15 @@ function verifySignature(req) {
 
 // Mətni çıxar
 function extractText(msg) {
-  if (!msg) return null;
-  const txt =
-    msg.conversation ||
-    msg.extendedTextMessage?.text ||
-    msg.imageMessage?.caption ||
-    msg.videoMessage?.caption ||
-    null;
-  return txt;
+  const core = unwrapMessage(msg);
+  if (!core) return null;
+  return (
+    core.conversation ||
+    core.extendedTextMessage?.text ||
+    core.imageMessage?.caption ||
+    core.videoMessage?.caption ||
+    null
+  );
 }
 
 // "994556165535:50@s.whatsapp.net" -> "994556165535"
@@ -281,18 +282,36 @@ function formatBakuTimestamp(date = new Date()) {
 
 // ---- helpers (digərlərinin yanına əlavə et) ----
 
+function unwrapMessage(msg) {
+  let m = msg;
+  for (let i = 0; i < 8 && m && typeof m === 'object'; i++) {
+    const next =
+      m.viewOnceMessageV2?.message ||
+      m.viewOnceMessage?.message ||
+      m.ephemeralMessage?.message ||
+      m.ephemeralMessageV2?.message ||
+      m.documentWithCaptionMessage?.message ||
+      m.editedMessage?.message ||
+      m.protocolMessage?.editedMessage?.message ||  // ✅ əlavə
+      null;
+
+    if (!next) break;
+    m = next;
+  }
+  return m;
+}
+
 // Yalnız STATIK lokasiya (locationMessage). liveLocationMessage nəzərə alınmır.
 function getStaticLocation(msg) {
-  if (!msg) return null;
+  const core = unwrapMessage(msg);
+  if (!core) return null;
 
-  // Bəzən location "view once" içində gəlir
-  const core = msg.viewOnceMessageV2?.message || msg;
-
-  const lm = core?.locationMessage;
+  const lm = core.locationMessage;
   if (!lm) return null;
 
   const lat = Number(lm.degreesLatitude);
   const lng = Number(lm.degreesLongitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
   return {
     kind: 'location',
@@ -301,7 +320,6 @@ function getStaticLocation(msg) {
     address: lm.address || null,
     caption: lm.caption || null,
     url: lm.url || `https://maps.google.com/?q=${lat},${lng}`,
-    // xam obyekti də qaytaraq ki, tam JSON-u log edək
     _raw: lm,
   };
 }
@@ -397,10 +415,11 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     }
 
     // ✅ əvvəl freshness (text + location üçün)
+    const selfLoc = getStaticLocation(env.msg);
     const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
-    if (!isReply && isTooOld(env, MAX_AGE_MS)) {
-      console.log('SKIP: too old');
+    if (!isReply && !selfLoc && isTooOld(env, MAX_AGE_MS)) {
+      console.log('SKIP: too old (non-location)');
       return;
     }
 
@@ -423,7 +442,6 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     // əvvəl text-i çıxar (reply olsa belə conversation içində olur)
     const textBody = extractText(env.msg);
 
-    const selfLoc = getStaticLocation(env.msg);
     const quotedLoc = getQuotedLocationFromEnv(env);
 
     // ✅ yalnız bu hallarda location kimi işlət:
