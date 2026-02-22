@@ -8,20 +8,14 @@ import WebSocket from 'ws';
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// ✅ yalnız BACKEND/STOMP (newChat) üçün icazəli qruplar
-const NEWCHAT_ONLY_GROUPS = new Set(
-  String(process.env.NEWCHAT_ONLY_GROUP_JIDS || '120363031082342256@g.us')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-);
-
 const {
   PORT = 4242,
   EVOLUTION_API_KEY,
   GROUP_A_JID,
   GROUP_B_JID,
   GROUP_C_JID,
+  GROUP_D_JID,
+  GROUP_G_JID,
   TARGET_API_BASE = 'https://mototaksi.az:9898',
   WS_URL = 'wss://mototaksi.az:9898/ws',
   ONE_SIGNAL_APP_ID,
@@ -29,7 +23,11 @@ const {
   ANDROID_CHANNEL_ID,
 } = process.env;
 
-const ALLOWED_GROUPS = new Set([GROUP_A_JID, GROUP_B_JID, GROUP_C_JID].filter(Boolean));
+const ALLOWED_GROUPS = new Set(
+  [GROUP_A_JID, GROUP_B_JID, GROUP_C_JID, GROUP_D_JID, GROUP_G_JID]
+    .map(s => String(s || '').trim())
+    .filter(Boolean)
+);
 
 /* ---------------- dedup (LRU-vari) ---------------- */
 const processedIds = new Map(); // id -> ts
@@ -81,6 +79,12 @@ function shortJson(x, limit = 1200) {
     return s.length > limit ? s.slice(0, limit) + '…' : s;
   } catch {
     return String(x);
+  }
+}
+
+function dbgLoc(...args) {
+  if (process.env.DEBUG_LOCATION === '1') {
+    console.log('[LOC]', ...args);
   }
 }
 
@@ -304,14 +308,41 @@ function unwrapMessage(msg) {
 // Yalnız STATIK lokasiya (locationMessage). liveLocationMessage nəzərə alınmır.
 function getStaticLocation(msg) {
   const core = unwrapMessage(msg);
-  if (!core) return null;
+  if (!core) {
+    dbgLoc('unwrapMessage -> null');
+    return null;
+  }
+
+  // core hansı növdür? (locationMessage yoxdursa da görək nə gəlib)
+  const keys = Object.keys(core || {});
+  dbgLoc('core keys=', keys.slice(0, 30));
 
   const lm = core.locationMessage;
-  if (!lm) return null;
+  if (!lm) {
+    // bəzən liveLocationMessage gəlir (sən ignore edirsən)
+    if (core.liveLocationMessage) dbgLoc('has liveLocationMessage (ignored)');
+    // bəzən başqa payload olur
+    dbgLoc('no locationMessage');
+    return null;
+  }
 
   const lat = Number(lm.degreesLatitude);
   const lng = Number(lm.degreesLongitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  dbgLoc('locationMessage raw=', {
+    degreesLatitude: lm.degreesLatitude,
+    degreesLongitude: lm.degreesLongitude,
+    name: lm.name,
+    address: lm.address,
+    caption: lm.caption,
+    hasThumb: !!lm.jpegThumbnail,
+    url: lm.url,
+  });
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    dbgLoc('invalid lat/lng', { lat: lm.degreesLatitude, lng: lm.degreesLongitude });
+    return null;
+  }
 
   return {
     kind: 'location',
@@ -378,17 +409,27 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     // ✅ ən stabil: data-dan envelope çıxar
     const env = normalizeEnvelope(req.body?.data || req.body);
 
+    // ---- DEBUG SNAP (location/structure) ----
+    if (process.env.DEBUG_LOCATION === '1') {
+      console.log('[ENV]', {
+        remoteJid: env?.remoteJid,
+        id: env?.id,
+        fromMe: !!env?.fromMe,
+        participant: env?.participant,
+        hasMsg: !!env?.msg,
+        msgKeys: env?.msg ? Object.keys(env.msg).slice(0, 30) : [],
+        hasContextInfo: !!env?.contextInfo,
+        ts: getMsgTsMs(env),
+      });
+    }
+
     // ✅ group routing (BURDA OLMALIDIR)
-    const isNewChatOnlyGroup = NEWCHAT_ONLY_GROUPS.has(env.remoteJid);
     const isAllowedForwardGroup = ALLOWED_GROUPS.has(env.remoteJid);
 
-    if (!isAllowedForwardGroup && !isNewChatOnlyGroup) {
-      console.log('SKIP: not allowed group', {
-        remoteJid: env.remoteJid,
-        allowForward: [...ALLOWED_GROUPS],
-        allowNewChatOnly: [...NEWCHAT_ONLY_GROUPS],
-      });
-      return; // ✅ burda OK, çünki handler-in içindədir
+    if (!isAllowedForwardGroup) {
+      console.log('SKIP: not allowed group',
+        { remoteJid: env.remoteJid, allowForward: [...ALLOWED_GROUPS] });
+      return;
     }
 
     console.log('WEBHOOK SNAP', {
@@ -416,9 +457,19 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
     // ✅ əvvəl freshness (text + location üçün)
     const selfLoc = getStaticLocation(env.msg);
+
+    dbgLoc('selfLoc=', selfLoc ? {
+      lat: selfLoc.lat,
+      lng: selfLoc.lng,
+      name: selfLoc.name,
+      address: selfLoc.address,
+      caption: selfLoc.caption,
+    } : null);
+
     const MAX_AGE_MS = Number(process.env.MAX_AGE_MS || 5 * 60 * 1000);
 
     if (!isReply && !selfLoc && isTooOld(env, MAX_AGE_MS)) {
+      dbgLoc('DROP: too old because selfLoc is null', { ts: getMsgTsMs(env), MAX_AGE_MS });
       console.log('SKIP: too old (non-location)');
       return;
     }
@@ -426,6 +477,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     // Dedup (ID based)
     // Dedup (yalnız reply DEYİLSƏ)
     if (!isReply && seenRecently(env.id)) {
+      dbgLoc('DROP: dedup by id', { id: env.id });
       console.log('SKIP: dedup (id)');
       return;
     }
@@ -443,6 +495,12 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
     const textBody = extractText(env.msg);
 
     const quotedLoc = getQuotedLocationFromEnv(env);
+
+    dbgLoc('ENTER location handler', {
+      isReply,
+      msgTs: getMsgTsMs(env),
+      maxAgeMs: Number(process.env.MAX_AGE_MS || 5 * 60 * 1000),
+    });
 
     // ✅ yalnız bu hallarda location kimi işlət:
     // 1) mesajın özü location-dursa
@@ -476,6 +534,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         const dupLoc = await isDuplicateByLastChats(locNeedle, "location", phonePrefixed);
 
         if (dupLoc) {
+          dbgLoc('DROP location: duplicate by last chats', { locNeedle });
           console.log("SKIP: duplicate by last chats (location)");
           return;
         }
@@ -483,8 +542,10 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 
       // ✅ Reply mesajlar BACKEND/STOMP-ə getməsin
       if (isReply) {
+        dbgLoc('DROP location: isReply');
         console.log('SKIP BACKEND/STOMP (location): reply message');
       } else {
+        dbgLoc('SEND location: publishStomp + maybe push', { phone: phonePrefixed });
         // ✅ BACKEND/STOMP üçün newChat (location)
         const lat = Number(effectiveLoc.lat);
         const lng = Number(effectiveLoc.lng);
