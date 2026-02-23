@@ -549,6 +549,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
         // ✅ BACKEND/STOMP üçün newChat (location)
         const lat = Number(effectiveLoc.lat);
         const lng = Number(effectiveLoc.lng);
+        const b64 = toBase64Thumb(effectiveLoc._raw?.jpegThumbnail);
 
         const newChat = {
           id: Date.now(),
@@ -577,8 +578,7 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
           location: { lat, lng },
 
           // ✅ thumbnail (RN səninki kimi data:image base64 gözləyir)
-          thumbnail: effectiveLoc._raw?.jpegThumbnail || null,
-
+          thumbnail: b64 ? `data:image/jpeg;base64,${b64}` : null,
           timestamp,           // "YYYY-MM-DD HH:mm:ss"
           createdAt: timestamp // ✅ bəzən app createdAt oxuyur
         };
@@ -671,6 +671,27 @@ app.post(['/webhook', '/webhook/*'], async (req, res) => {
 function isValidUUID(s) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     .test(String(s || '').trim());
+}
+
+function toBase64Thumb(jpegThumbnail) {
+  if (!jpegThumbnail) return null;
+
+  // Buffer gəlirsə:
+  if (Buffer.isBuffer(jpegThumbnail)) {
+    return jpegThumbnail.toString('base64');
+  }
+
+  // Evolution bəzən {0:255,1:216,...} kimi göndərir:
+  if (typeof jpegThumbnail === 'object') {
+    try {
+      const arr = Object.values(jpegThumbnail);
+      return Buffer.from(arr).toString('base64');
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 async function sendPushNotification(ids, title, body) {
